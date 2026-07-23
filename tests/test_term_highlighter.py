@@ -1,12 +1,9 @@
-from pathlib import Path
-
 from paper_agent.parser import parse_paper
 from paper_agent.term_highlighter import extract_significant_terms
 
 
-def test_significant_terms_include_ml_or_method_terms(tmp_path):
-    pdf = Path(__file__).resolve().parents[1] / "examples" / "2606.09079v2.pdf"
-    parsed = parse_paper(pdf, tmp_path / "report")
+def test_significant_terms_include_ml_or_method_terms(tmp_path, sample_pdf):
+    parsed = parse_paper(sample_pdf, tmp_path / "report")
     terms = extract_significant_terms(parsed, max_terms=40)
 
     assert terms
@@ -14,9 +11,8 @@ def test_significant_terms_include_ml_or_method_terms(tmp_path):
     assert all("paper-term-highlighter" in term.skills for term in terms)
 
 
-def test_user_taught_term_outranks_heuristic_terms(tmp_path):
-    pdf = Path(__file__).resolve().parents[1] / "examples" / "2606.09079v2.pdf"
-    parsed = parse_paper(pdf, tmp_path / "report")
+def test_user_taught_term_outranks_heuristic_terms(tmp_path, sample_pdf):
+    parsed = parse_paper(sample_pdf, tmp_path / "report")
     learned = {
         "model": {
             "term": "model",

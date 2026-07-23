@@ -48,8 +48,8 @@ Clone or download the repository, then run the platform setup script:
 **Windows PowerShell**
 
 ```powershell
-git clone <repository-url>
-cd deep-research
+git clone https://github.com/Siris2314/deep-paper-reader.git
+cd deep-paper-reader
 .\scripts\setup.ps1
 .\scripts\run_paper_reader_ui.ps1
 ```
@@ -57,8 +57,8 @@ cd deep-research
 **macOS or Linux**
 
 ```bash
-git clone <repository-url>
-cd deep-research
+git clone https://github.com/Siris2314/deep-paper-reader.git
+cd deep-paper-reader
 ./scripts/setup.sh
 ./scripts/run_paper_reader_ui.sh
 ```

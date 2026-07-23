@@ -42,6 +42,11 @@ dev = [
     "ruff>=0.9.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Siris2314/deep-paper-reader"
+Repository = "https://github.com/Siris2314/deep-paper-reader.git"
+Issues = "https://github.com/Siris2314/deep-paper-reader/issues"
+
 [project.scripts]
 paper-agent = "paper_agent.cli:main"
 
