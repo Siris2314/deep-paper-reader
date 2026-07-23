@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chat Answer"
+  short_description: "Paper-grounded interactive Q&A"
+  default_prompt: "Use $chat-answer to answer my question against the parsed paper workspace."

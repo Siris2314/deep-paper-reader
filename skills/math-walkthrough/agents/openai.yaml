@@ -1,0 +1,4 @@
+interface:
+  display_name: "Math Walkthrough"
+  short_description: "Explain paper equations carefully"
+  default_prompt: "Use $math-walkthrough to explain the equations and notation in this paper."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tavily Background"
+  short_description: "Find external paper context"
+  default_prompt: "Use $tavily-background to gather external context for this paper."

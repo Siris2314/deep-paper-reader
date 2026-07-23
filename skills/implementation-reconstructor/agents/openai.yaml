@@ -1,0 +1,4 @@
+interface:
+  display_name: "Implementation Reconstructor"
+  short_description: "Turn paper methods into pseudocode"
+  default_prompt: "Use $implementation-reconstructor to reconstruct how to implement this paper."

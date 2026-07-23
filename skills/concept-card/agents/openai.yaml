@@ -1,0 +1,4 @@
+interface:
+  display_name: "Concept Card"
+  short_description: "Paper-grounded concept popups"
+  default_prompt: "Use $concept-card to explain this term in the context of the paper."

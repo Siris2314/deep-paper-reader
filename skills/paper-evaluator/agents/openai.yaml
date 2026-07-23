@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Evaluator"
+  short_description: "Check paper-answer alignment"
+  default_prompt: "Use $paper-evaluator to evaluate whether this answer is grounded in the paper."

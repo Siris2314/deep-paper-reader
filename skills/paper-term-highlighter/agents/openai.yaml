@@ -1,0 +1,4 @@
+interface:
+  display_name: "Paper Term Highlighter"
+  short_description: "Highlight important paper terms"
+  default_prompt: "Use $paper-term-highlighter to identify and highlight significant terms in this parsed paper."

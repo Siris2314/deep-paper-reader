@@ -1,0 +1,4 @@
+interface:
+  display_name: "Figure Table Analysis"
+  short_description: "Analyze paper figures and tables"
+  default_prompt: "Use $figure-table-analysis to explain this figure or table from the paper."

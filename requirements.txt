@@ -1,0 +1,3 @@
+# Compatibility entry point for pip users and deployment tools.
+# Runtime dependencies are declared once in pyproject.toml.
+-e .

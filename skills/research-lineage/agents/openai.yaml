@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Lineage"
+  short_description: "Trace concepts to cited prior work"
+  default_prompt: "Trace how this paper builds on prior research using citation contexts and conservative relation labels."
