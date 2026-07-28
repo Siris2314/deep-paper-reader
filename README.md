@@ -2,8 +2,6 @@
 
 Deep Paper Reader helps you work through machine-learning papers without losing the paper itself. It keeps the original PDF on screen, marks important ideas and equations, and gives you focused explanations when you click or ask a question.
 
-> **Status:** Early alpha. The main reading, chat, memory, and evaluation features work, but explanation quality still depends on the local model and the quality of the PDF.
-
 ## What it does
 
 - Reads the original PDF instead of rebuilding it as plain text.
