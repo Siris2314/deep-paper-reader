@@ -142,6 +142,22 @@ def test_generated_math_collapses_overescaped_commands_and_repairs_limits():
     )
 
 
+def test_generated_math_wraps_bracketed_latex_descriptions():
+    raw = (
+        r"[\mathcal{M}_{i,l}: \text{Set of indices } s], "
+        r"[P_{i,l,j}: \text{scalar probability in range }[0,1]], "
+        r"[p: \text{scalar threshold}]."
+    )
+
+    repaired = _repair_generated_math_text(raw)
+
+    assert repaired == (
+        r"$\mathcal{M}_{i,l}: \text{Set of indices } s$, "
+        r"$P_{i,l,j}: \text{scalar probability in range }[0,1]$, "
+        r"$p: \text{scalar threshold}$."
+    )
+
+
 def test_generic_role_is_humanized_from_voting_equation():
     role = _specific_role(
         "mathematical_inference",

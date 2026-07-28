@@ -23,9 +23,10 @@ Explain paper math from exact paper locations and parsed equation cards.
 12. Cite one to three paper facts that support the interpretation and explain the equation's concrete role in the method. Reject generic roles such as `mathematical inference`.
 13. Run deterministic checks and an independent judge model across correctness, paper grounding, symbol coverage, LaTeX fidelity, and usefulness.
 14. If the answer does not pass and both generation and judging are available, convert low-scoring dimensions and judge issues into targeted repair instructions. Keep the recovered equation, paper evidence, and paper-sourced symbol meanings fixed.
-15. Re-run the independent judge after each repair. Accept a replacement only when its verdict improves or its score rises by the configured minimum.
-16. Stop when the answer passes, the attempt budget is exhausted, output repeats, evaluation does not improve, generation fails, or judging is unavailable. Never run an open-ended self-critique loop.
-17. Cache explanations under `math/explanations/`, evaluations under `math/evaluations/`, and the iteration trace under `math/loops/`.
+15. Re-run the independent judge after each repair. Accept a replacement only when its verdict improves or its score rises by the configured minimum and every deterministic repair target is resolved.
+16. Retrieve a bounded set of user-confirmed judging principles and similar correction cases. Treat this memory as rubric guidance, never as paper evidence and never as authority over deterministic checks.
+17. Stop when the answer passes, the attempt budget is exhausted, output repeats, evaluation does not improve, required feedback remains unresolved, generation fails, or judging is unavailable. Never run an open-ended self-critique loop.
+18. Cache explanations under `math/explanations/`, evaluations under `math/evaluations/`, and the iteration trace under `math/loops/`.
 
 ## Output Schema
 

@@ -198,7 +198,7 @@ These ignored directories are created as needed:
 
 - `uploaded_papers/`: local upload copies
 - `paper_reports/`: isolated parsed paper workspaces and chat threads
-- `agent_memory/`: user-confirmed cross-paper memory and hardware profiles
+- `agent_memory/`: user-confirmed cross-paper memory, math-judge alignment, and hardware profiles
 
 Delete a paper workspace when it is no longer needed. Never commit `.env`, generated workspaces, API keys, or copyrighted PDFs without permission.
 

@@ -4,6 +4,7 @@ import paper_agent.math_judge as math_judge
 from paper_agent.math_judge import (
     MathJudgePayload,
     JudgeScore,
+    _judge_messages,
     deterministic_math_checks,
     evaluate_math_explanation,
 )
@@ -62,6 +63,47 @@ def test_deterministic_judge_accepts_supported_dots_notation():
     checks = deterministic_math_checks(payload)
 
     assert checks["inline_math_valid"] is True
+
+
+def test_deterministic_judge_rejects_bare_latex_in_prose():
+    payload = explanation_payload()
+    payload["dimensional_analysis"] = (
+        r"[\mathcal{M}_{i,l}: \text{Set of indices } s], "
+        r"[P_{i,l,j}: \text{scalar probability in range }[0,1]]."
+    )
+
+    checks = deterministic_math_checks(payload)
+
+    assert checks["inline_math_valid"] is False
+    assert any(
+        "outside math delimiters" in issue for issue in checks["inline_math_issues"]
+    )
+
+
+def test_textstyle_is_valid_when_delimited():
+    payload = explanation_payload()
+    payload["steps"] = [r"Compute $\textstyle \sum_i p_i$."]
+
+    assert deterministic_math_checks(payload)["inline_math_valid"] is True
+
+
+def test_judge_prompt_includes_human_alignment_memory():
+    messages = _judge_messages(
+        explanation_payload(),
+        deterministic_math_checks(explanation_payload()),
+        {
+            "principles": [
+                {
+                    "dimension": "latex_fidelity",
+                    "principle": "Do not penalize valid MathJax style commands.",
+                }
+            ],
+            "episodes": [],
+        },
+    )
+
+    assert "Human-aligned judge working memory" in messages[1]["content"]
+    assert "Do not penalize valid MathJax style commands" in messages[1]["content"]
 
 
 def test_independent_math_judge_scores_and_justifies(tmp_path):

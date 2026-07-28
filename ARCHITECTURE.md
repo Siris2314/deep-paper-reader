@@ -55,7 +55,9 @@ Opening a highlighted concept creates a paper-only card immediately. When Tavily
 
 Equation regions are grouped from PDF geometry and, for display equations, cropped for the multimodal math model. The workflow separates four stages: faithful transcription, deterministic symbol extraction, position-sensitive symbol-definition retrieval, and a compact reasoning call. This prevents one slow model call from discarding usable perception and grounding work. When reasoning fails, the UI receives a grounded deterministic explanation instead of a generic parser-only card.
 
-An independent judge scores correctness, grounding, symbol coverage, LaTeX fidelity, and usefulness. A failed or review verdict can trigger a bounded, targeted revision, but the recovered equation, paper evidence, and paper-sourced symbols remain fixed. Revisions are accepted only after an improved independent score, and the full stopping trace is persisted.
+An independent judge scores correctness, grounding, symbol coverage, LaTeX fidelity, and usefulness. A failed or review verdict can trigger a bounded, targeted revision, but the recovered equation, paper evidence, and paper-sourced symbols remain fixed. Revisions are accepted only after an improved independent score and resolution of deterministic feedback, and the full stopping trace is persisted.
+
+Human corrections align the judge through two local memory layers. Semantic memory stores reusable judging principles, while episodic memory stores compact equation-specific calibration cases. Each evaluation retrieves a bounded working set of both. Judge memory adjusts rubric interpretation only; it cannot replace paper evidence or override deterministic validation.
 
 The local runtime intentionally uses two primary model weights: `qwen3.5:4b` generates math explanations, while `qwen2.5:7b` handles concept relevance and judges math output. This keeps the judge independent from the math generator without forcing a third large model through limited VRAM.
 

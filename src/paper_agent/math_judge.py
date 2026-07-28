@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from paper_agent.agents import build_chat_model
 from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage, response_schema_text
+from paper_agent.judge_memory import retrieve_math_judge_memory
 from paper_agent.observability import invoke_observed, observed_stage
 from paper_agent.workspace import Workspace
 
@@ -118,6 +119,7 @@ _SUPPORTED_INLINE_COMMANDS = {
     "sum",
     "tau",
     "text",
+    "textstyle",
     "theta",
     "tilde",
     "times",
@@ -130,14 +132,16 @@ _SUPPORTED_INLINE_COMMANDS = {
 
 
 def _inline_math_issues(explanation: dict[str, Any]) -> list[str]:
-    values = [str(explanation.get(name) or "") for name in _INLINE_MATH_FIELDS]
+    field_values = [
+        (name, str(explanation.get(name) or "")) for name in _INLINE_MATH_FIELDS
+    ]
     for name in ("steps", "assumptions_or_missing_details"):
         items = explanation.get(name)
         if isinstance(items, list):
-            values.extend(str(item or "") for item in items)
+            field_values.extend((name, str(item or "")) for item in items)
 
     issues: list[str] = []
-    for field_text in values:
+    for field_name, field_text in field_values:
         segments = [
             match.group(1) or match.group(2) or ""
             for match in re.finditer(r"\$([\s\S]*?)\$|\\\(([\s\S]*?)\\\)", field_text)
@@ -161,6 +165,20 @@ def _inline_math_issues(explanation: dict[str, Any]) -> list[str]:
                     "Inline math uses unsupported commands: "
                     + ", ".join(f"\\{command}" for command in unsupported)
                 )
+        prose = re.sub(r"```[\s\S]*?```|`[^`\n]*`", " ", field_text)
+        prose = re.sub(r"\$[\s\S]*?\$|\\\([\s\S]*?\\\)", " ", prose)
+        bare_commands = sorted(
+            {
+                command
+                for command in re.findall(r"\\([A-Za-z]+)", prose)
+                if command in _SUPPORTED_INLINE_COMMANDS
+            }
+        )
+        if bare_commands:
+            issues.append(
+                f"{field_name} contains LaTeX outside math delimiters: "
+                + ", ".join(f"\\{command}" for command in bare_commands)
+            )
     return list(dict.fromkeys(issues))[:12]
 
 
@@ -248,7 +266,11 @@ def _structured_payload(result: Any) -> dict[str, Any]:
     return MathJudgePayload.model_validate(json.loads(text[start : end + 1])).model_dump()
 
 
-def _judge_messages(explanation: dict[str, Any], checks: dict[str, object]) -> list[dict[str, str]]:
+def _judge_messages(
+    explanation: dict[str, Any],
+    checks: dict[str, object],
+    working_memory: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[dict[str, str]]:
     candidate = dict(explanation)
     if checks.get("geometry_latex_available"):
         candidate["raw_equation"] = (
@@ -276,7 +298,10 @@ def _judge_messages(explanation: dict[str, Any], checks: dict[str, object]) -> l
                 "Do not call DQ, IUQ, or other labels unsupported merely because raw extraction inserted spaces. "
                 "Judge usefulness using the step-by-step explanation, symbol provenance, dimensional analysis, "
                 "intuition, implementation view, and cited paper evidence. Generic prose or an empty symbol table "
-                "must score poorly. Provide concise written justifications and actionable issues. Do not rewrite the answer."
+                "must score poorly. Human judge memory below contains rubric guidance and prior calibration cases, "
+                "not facts about this paper. Apply relevant principles consistently, use episodes as examples rather "
+                "than templates, and never let memory override paper evidence or deterministic validation. Provide "
+                "concise written justifications and actionable issues. Do not rewrite the answer."
             ),
         },
         {
@@ -284,7 +309,9 @@ def _judge_messages(explanation: dict[str, Any], checks: dict[str, object]) -> l
             "content": (
                 "Evaluate this math explanation:\n"
                 f"{json.dumps(candidate, ensure_ascii=False, indent=2)}\n\n"
-                f"Deterministic checks:\n{json.dumps(checks, ensure_ascii=False, indent=2)}"
+                f"Deterministic checks:\n{json.dumps(checks, ensure_ascii=False, indent=2)}\n\n"
+                "Human-aligned judge working memory:\n"
+                f"{json.dumps(working_memory or {'principles': [], 'episodes': []}, ensure_ascii=False, indent=2)}"
             ),
         },
     ]
@@ -310,6 +337,7 @@ def evaluate_math_explanation(
     phase: str = "initial",
 ) -> MathJudgeResult:
     phase_key = _trace_phase(phase)
+    working_memory = retrieve_math_judge_memory(explanation)
     with observed_stage(
         f"validate-{phase_key}",
         input_data={
@@ -321,6 +349,10 @@ def evaluate_math_explanation(
         as_type="guardrail",
     ) as validation:
         checks = deterministic_math_checks(explanation)
+        checks["judge_memory"] = {
+            "principles": len(working_memory["principles"]),
+            "episodes": len(working_memory["episodes"]),
+        }
         validation.update(
             output={
                 "valid": bool(
@@ -392,7 +424,7 @@ def evaluate_math_explanation(
                     "math_judge",
                     f"The independent judge is evaluating the explanation with {model_name}.",
                 )
-            messages = _judge_messages(explanation, checks)
+            messages = _judge_messages(explanation, checks, working_memory)
             record_context_usage(
                 workspace,
                 workflow="math_judge",
@@ -404,7 +436,12 @@ def evaluate_math_explanation(
                     "structured response schema": response_schema_text(MathJudgePayload),
                 },
                 reserved_output_tokens=output_budget,
-                metadata={"generatorModel": generator, "phase": phase_key},
+                metadata={
+                    "generatorModel": generator,
+                    "phase": phase_key,
+                    "judgeMemoryPrinciples": len(working_memory["principles"]),
+                    "judgeMemoryEpisodes": len(working_memory["episodes"]),
+                },
             )
             judge_name = (
                 "judge-initial"

@@ -95,8 +95,9 @@ When Langfuse is enabled, run `python -m paper_agent.cli llmops-gate` to check p
 1. Upload a paper in the left sidebar.
 2. Click a highlighted concept for paper evidence, external background, and paper-specific synthesis.
 3. Click an equation region for a grounded math walkthrough and judge evaluation.
-4. Use **Paper Chat** in `Fast`, `Deep`, `Web`, or `Explore` mode.
-5. Select a missed term in the PDF and choose **Remember** to teach the highlighter.
+4. Mark whether the judge looks right, or provide a correction that can guide future equation judgments.
+5. Use **Paper Chat** in `Fast`, `Deep`, `Web`, or `Explore` mode.
+6. Select a missed term in the PDF and choose **Remember** to teach the highlighter.
 
 Paper-chat citations jump to the original page. Strong lineage labels such as `extends`, `modifies`, and `adopts` require explicit support in the current paper; a citation edge alone is treated as background.
 

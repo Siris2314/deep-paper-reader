@@ -99,10 +99,16 @@ class MathAgentPayload(BaseModel):
     )
     intuition: str = Field(description="Why this mathematical construction is useful here.")
     dimensional_analysis: str = Field(
-        description="Tensor shapes and compatibility, separating stated facts from inference."
+        description=(
+            "Tensor shapes and compatibility in readable prose. Put every mathematical "
+            "expression inside $...$ and never use square brackets as math delimiters."
+        )
     )
     implementation_view: str = Field(
-        description="A concise tensor-operation or pseudocode interpretation."
+        description=(
+            "A concise tensor-operation or pseudocode interpretation with code identifiers "
+            "in backticks and mathematical notation inside $...$."
+        )
     )
     paper_evidence: list[str] = Field(
         min_length=1, description="One to three nearby paper facts supporting the explanation."
@@ -125,10 +131,16 @@ class MathReasoningPayload(BaseModel):
         description="Why this mathematical construction is useful in this paper."
     )
     dimensional_analysis: str = Field(
-        description="Shape or scalar compatibility, with unsupported details labeled."
+        description=(
+            "Shape or scalar compatibility in readable prose. Put every mathematical "
+            "expression inside $...$ and never use square brackets as math delimiters."
+        )
     )
     implementation_view: str = Field(
-        description="A concise tensor-operation or pseudocode interpretation."
+        description=(
+            "A concise tensor-operation or pseudocode interpretation with code identifiers "
+            "in backticks and mathematical notation inside $...$."
+        )
     )
     context_fit: str = Field(
         description="How this equation supports the paper's method, system, or result."
@@ -390,10 +402,44 @@ def _repair_latex_segment(value: str) -> str:
     return repaired
 
 
+def _wrap_bracketed_latex(value: str) -> str:
+    output: list[str] = []
+    cursor = 0
+    while cursor < len(value):
+        if value[cursor] != "[":
+            output.append(value[cursor])
+            cursor += 1
+            continue
+        depth = 1
+        end = cursor + 1
+        while end < len(value) and depth:
+            if value[end] == "[":
+                depth += 1
+            elif value[end] == "]":
+                depth -= 1
+            end += 1
+        if depth:
+            output.append(value[cursor])
+            cursor += 1
+            continue
+        content = value[cursor + 1 : end - 1]
+        has_latex = bool(
+            re.search(
+                r"\\(?:mathcal|mathbb|mathbf|mathrm|text|operatorname|frac|sum|bigcup)\b",
+                content,
+            )
+        )
+        braces_balanced = content.count("{") == content.count("}")
+        output.append(f"${content}$" if has_latex and braces_balanced else value[cursor:end])
+        cursor = end
+    return "".join(output)
+
+
 def _repair_generated_math_text(value: object, *, whole_math: bool = False) -> str:
     text = str(value or "")
     if whole_math:
         return _repair_latex_segment(text)
+    text = _wrap_bracketed_latex(text)
     return re.sub(
         r"\$[^$]*\$|\\\([\s\S]*?\\\)",
         lambda match: _repair_latex_segment(match.group(0)),
@@ -812,7 +858,7 @@ def _explain_equation_impl(
     judge_fn: Callable[..., object] | None = None,
 ) -> MathExplanation:
     digest = hashlib.sha256(
-        f"math-agent-v25-feedback-grounding\n{page}\n{region_kind}\n{raw}\n{context}\n"
+        f"math-agent-v26-judge-memory-formatting\n{page}\n{region_kind}\n{raw}\n{context}\n"
         f"{json.dumps(layout_evidence or {}, sort_keys=True)}".encode("utf-8")
     ).hexdigest()[:16]
     cache_rel = f"math/explanations/page-{page:03d}-{digest}.json"
@@ -987,7 +1033,9 @@ def _explain_equation_impl(
                 "role, give ordered computational steps, check scalar or tensor compatibility, and explain how "
                 "the equation advances this paper's method. Keep notation in prose simple and MathJax-compatible. "
                 "Use valid $...$ delimiters, prefer plain symbols and Unicode operators, use \\mathbf instead of "
-                "\\boldsymbol, and never emit a partial or malformed LaTeX command."
+                "\\boldsymbol, and never emit a partial or malformed LaTeX command. Every LaTeX command in prose "
+                "must be inside $...$; never use [ ... ] as a math delimiter. Prefer ordinary prose over \\text{} "
+                "inside the dimensions field, and use backticks for code in the implementation field."
             )
             prompt_layout: object = {
                 "note": "Equation perception completed earlier; raw glyph spans are omitted.",
@@ -1257,7 +1305,8 @@ def _explain_equation_impl(
                 "Resolve the listed targets with concrete computation, dimensions, intuition, and provenance. "
                 "If the paper does not define something, label it inference or unresolved. Keep inline notation "
                 "simple and MathJax-compatible: use valid $...$ delimiters, prefer plain symbols and Unicode "
-                "operators, use \\mathbf instead of \\boldsymbol, and never emit a partial LaTeX command."
+                "operators, use \\mathbf instead of \\boldsymbol, and never emit a partial LaTeX command. "
+                "Never use [ ... ] as a math delimiter; put every LaTeX command inside $...$ and code inside backticks."
             )
             previous_payload = asdict(explanation)
             previous_payload.pop("evaluation", None)

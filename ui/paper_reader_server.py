@@ -27,6 +27,7 @@ load_dotenv(REPO_ROOT / ".env")
 from paper_agent.concepts import get_or_create_concept_card, save_concept_index  # noqa: E402
 from paper_agent.concept_enrichment import enrich_concept_card  # noqa: E402
 from paper_agent.context_diagnostics import context_diagnostics_payload  # noqa: E402
+from paper_agent.judge_memory import record_math_judge_feedback  # noqa: E402
 from paper_agent.math_agent import explain_equation  # noqa: E402
 from paper_agent.math_regions import extract_math_regions  # noqa: E402
 from paper_agent.observability import (  # noqa: E402
@@ -64,7 +65,7 @@ from paper_agent.workspace import Workspace  # noqa: E402
 UPLOAD_ROOT = REPO_ROOT / "uploaded_papers"
 REPORT_ROOT = REPO_ROOT / "paper_reports"
 DEFAULT_PORT = int(os.getenv("PAPER_READER_PORT", "8503"))
-BUILD_LABEL = "reader-build-2026-07-28-feedback-loop-v31"
+BUILD_LABEL = "reader-build-2026-07-28-aligned-judge-v32"
 ENRICHMENT_JOB_TIMEOUT = max(30.0, min(float(os.getenv("ENRICHMENT_JOB_TIMEOUT", "240")), 600.0))
 ENRICHMENT_JOBS: dict[str, dict[str, object]] = {}
 ENRICHMENT_LOCK = threading.RLock()
@@ -1203,6 +1204,12 @@ APP_HTML = r"""<!doctype html>
     .judge-score span { display: block; color: #667085; font-size: 10px; overflow-wrap: anywhere; }
     .judge-reasons { display: grid; gap: 7px; margin-top: 9px; }
     .judge-reason { font-size: 13px; border-left: 2px solid #aeb9c9; padding-left: 8px; }
+    .judge-feedback { border-top: 1px solid #d7dee8; margin-top: 12px; padding-top: 10px; }
+    .judge-feedback-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+    .judge-correction { display: none; gap: 7px; margin-top: 9px; }
+    .judge-correction.open { display: grid; }
+    .judge-correction textarea { min-height: 82px; resize: vertical; }
+    .judge-correction select { max-width: 240px; }
     .source-card {
       border: 1px solid #d8dee8;
       background: #fafbfd;
@@ -1434,7 +1441,7 @@ APP_HTML = r"""<!doctype html>
         <div class="app-heading">
           <h1 id="paperTitle">Paper workspace</h1>
           <div id="paperMeta" class="paper-meta">Open a PDF to begin.</div>
-          <span id="buildLabel" class="build-label">reader-build-2026-07-28-feedback-loop-v31</span>
+          <span id="buildLabel" class="build-label">reader-build-2026-07-28-aligned-judge-v32</span>
         </div>
         <div id="stats" class="stat-grid"></div>
       </header>
@@ -1518,7 +1525,7 @@ APP_HTML = r"""<!doctype html>
     </div>
   </div>
   <script>
-    const BUILD_LABEL = 'reader-build-2026-07-28-feedback-loop-v31';
+    const BUILD_LABEL = 'reader-build-2026-07-28-aligned-judge-v32';
     const state = { workspace: null, pages: [], sections: [], terms: [], termMap: new Map(), metadata: null, pageLayouts: new Map(), selectionPage: null, mathExplanations: new Map(), mathPending: new Set(), threadId: null, chatMode: 'fast', chatBusy: false, lastQuestion: '', chatQuestions: new Map() };
     const autoWebAttempted = new Set();
     let mathHoverTimer = null;
@@ -1730,6 +1737,29 @@ APP_HTML = r"""<!doctype html>
           correction,
           remember,
         }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    async function submitMathJudgeFeedback(rating, dimension='overall', feedback='', remember=true) {
+      const pop = $('popover');
+      const explanation = state.mathExplanations.get(pop.dataset.mathKey);
+      if (!explanation) throw new Error('The equation explanation is no longer available.');
+      const compactExplanation = {
+        equation_id: explanation.equation_id,
+        page: explanation.page,
+        display_latex: explanation.display_latex,
+        role: explanation.role,
+        plain_english: explanation.plain_english,
+        context_fit: explanation.context_fit,
+        symbols: explanation.symbols,
+        evaluation: explanation.evaluation,
+      };
+      const res = await fetch(`/api/math-judge-feedback?workspace=${encodeURIComponent(state.workspace)}`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({rating, dimension, feedback, remember, explanation: compactExplanation}),
       });
       if (!res.ok) throw new Error(await res.text());
       return res.json();
@@ -2178,8 +2208,39 @@ APP_HTML = r"""<!doctype html>
         .trim();
     }
 
+    function wrapBracketedLatex(value) {
+      const source = String(value || '');
+      let output = '';
+      let cursor = 0;
+      while (cursor < source.length) {
+        if (source[cursor] !== '[') {
+          output += source[cursor];
+          cursor += 1;
+          continue;
+        }
+        let depth = 1;
+        let end = cursor + 1;
+        while (end < source.length && depth > 0) {
+          if (source[end] === '[') depth += 1;
+          if (source[end] === ']') depth -= 1;
+          end += 1;
+        }
+        if (depth !== 0) {
+          output += source[cursor];
+          cursor += 1;
+          continue;
+        }
+        const content = source.slice(cursor + 1, end - 1);
+        const hasLatex = /\\(?:mathcal|mathbb|mathbf|mathrm|text|operatorname|frac|sum|bigcup)\b/.test(content);
+        const bracesBalanced = (content.match(/\{/g) || []).length === (content.match(/\}/g) || []).length;
+        output += hasLatex && bracesBalanced ? `$${content}$` : source.slice(cursor, end);
+        cursor = end;
+      }
+      return output;
+    }
+
     function formatTechnicalInline(text) {
-      const source = String(text || '');
+      const source = wrapBracketedLatex(text);
       const math = /(\$[^$\n]+\$|\\\([^\n]*?\\\)|[A-Za-z](?:_[A-Za-z0-9]+)?\s*∈\s*ℝ\^\{[^}]+\}|[A-Za-z](?:_[A-Za-z0-9]+)?\s*=\s*[A-Za-z0-9_^{}]+|softmax\([^)]{1,140}\)\s*[A-Za-z](?:_[A-Za-z0-9]+)?|batch(?:×[A-Za-z0-9_]+){2,})/g;
       let output = '';
       let cursor = 0;
@@ -2427,7 +2488,7 @@ APP_HTML = r"""<!doctype html>
         <h4>Intuition</h4>
         <p>${formatInline(explanation.intuition || 'No intuition was produced.')}</p>
         <h4>Dimensions and shapes</h4>
-        <p>${formatInline(explanation.dimensional_analysis || 'Dimensions were not resolved.')}</p>
+        <p>${formatTechnicalInline(explanation.dimensional_analysis || 'Dimensions were not resolved.')}</p>
         <h4>Implementation view</h4>
         <div class="implementation-view">${renderImplementation(explanation.implementation_view)}</div>
         <h4>How it fits the paper</h4>
@@ -2481,6 +2542,26 @@ APP_HTML = r"""<!doctype html>
             <div class="judge-reason"><b>${escapeHtml(label)}:</b> ${formatInline(dimensions[key].justification || '')}</div>
           `).join('')}</div>
           ${(evaluation.issues || []).length ? `<ul class="evidence">${evaluation.issues.map(item => `<li>${formatInline(item)}</li>`).join('')}</ul>` : ''}
+            <div class="judge-feedback">
+              <div class="judge-feedback-actions">
+                <button data-math-judge-rating="agree">Judge looks right</button>
+                <button data-math-judge-rating="disagree">Correct the judge</button>
+              </div>
+              <div class="subtle" data-math-judge-feedback-status></div>
+              <div class="judge-correction">
+                <select aria-label="Judge dimension">
+                  <option value="overall">Overall judgment</option>
+                  <option value="correctness">Correctness</option>
+                  <option value="paper_grounding">Paper grounding</option>
+                  <option value="symbol_coverage">Symbol coverage</option>
+                  <option value="latex_fidelity">LaTeX fidelity</option>
+                  <option value="usefulness">Usefulness</option>
+                </select>
+                <textarea maxlength="4000" placeholder="What rule should the judge apply next time?" aria-label="Judge correction"></textarea>
+                <label class="memory-check"><input type="checkbox" checked /> Use this guidance for future equations</label>
+                <button data-save-math-judge-feedback>Save judge guidance</button>
+              </div>
+            </div>
             <details class="trace-details"><summary>Deterministic evaluation checks</summary><div class="equation-card">${escapeHtml(JSON.stringify(evaluation.deterministic_checks || {}, null, 2))}</div></details>
           </div>
         </details>
@@ -2690,6 +2771,48 @@ APP_HTML = r"""<!doctype html>
           status.textContent = err.message;
         }).finally(() => {
           correctionButton.disabled = false;
+        });
+        return;
+      }
+      const judgeRating = event.target.closest('[data-math-judge-rating]');
+      if (judgeRating) {
+        const feedbackRoot = judgeRating.closest('.judge-feedback');
+        if (judgeRating.dataset.mathJudgeRating === 'disagree') {
+          feedbackRoot.querySelector('.judge-correction')?.classList.add('open');
+        } else {
+          const status = feedbackRoot.querySelector('[data-math-judge-feedback-status]');
+          judgeRating.disabled = true;
+          submitMathJudgeFeedback('agree').then(() => {
+            status.textContent = 'Judge agreement saved as a calibration example.';
+            judgeRating.parentElement.innerHTML = '<span class="subtle">Judge agreement saved.</span>';
+          }).catch(err => {
+            status.textContent = err.message;
+          }).finally(() => {
+            judgeRating.disabled = false;
+          });
+        }
+        return;
+      }
+      const saveJudgeFeedback = event.target.closest('[data-save-math-judge-feedback]');
+      if (saveJudgeFeedback) {
+        const form = saveJudgeFeedback.closest('.judge-correction');
+        const feedback = form.querySelector('textarea').value.trim();
+        const dimension = form.querySelector('select').value;
+        const remember = form.querySelector('input[type=checkbox]').checked;
+        const status = form.querySelector('[data-math-judge-feedback-status]');
+        if (!feedback) {
+          status.textContent = 'Describe what the judge should do differently.';
+          return;
+        }
+        saveJudgeFeedback.disabled = true;
+        submitMathJudgeFeedback('disagree', dimension, feedback, remember).then(() => {
+          status.textContent = remember
+            ? 'Guidance saved to judge memory.'
+            : 'Feedback saved for this paper only.';
+        }).catch(err => {
+          status.textContent = err.message;
+        }).finally(() => {
+          saveJudgeFeedback.disabled = false;
         });
         return;
       }
@@ -3019,6 +3142,53 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                     metadata={
                         "messageId": str(payload.get("messageId") or ""),
                         "rememberedCorrection": bool(payload.get("remember")),
+                    },
+                )
+                self._json({"ok": True, "feedback": record})
+                return
+            if parsed_url.path == "/api/math-judge-feedback":
+                query = parse_qs(parsed_url.query)
+                workspace_arg = query.get("workspace", [None])[0]
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 65_536:
+                    self._error(HTTPStatus.BAD_REQUEST, "Missing or oversized judge feedback")
+                    return
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                rating = str(payload.get("rating") or "")
+                if rating not in {"agree", "disagree"}:
+                    self._error(HTTPStatus.BAD_REQUEST, "Unsupported judge feedback rating")
+                    return
+                explanation = payload.get("explanation")
+                if not isinstance(explanation, dict) or not explanation.get("display_latex"):
+                    self._error(HTTPStatus.BAD_REQUEST, "Missing equation explanation")
+                    return
+                feedback = str(payload.get("feedback") or "").strip()
+                if rating == "disagree" and not feedback:
+                    self._error(HTTPStatus.BAD_REQUEST, "A judge correction is required")
+                    return
+                workspace, _ = load_workspace(workspace_arg)
+                record = record_math_judge_feedback(
+                    workspace,
+                    explanation=explanation,
+                    rating=rating,  # type: ignore[arg-type]
+                    dimension=str(payload.get("dimension") or "overall"),
+                    feedback=feedback,
+                    remember=bool(payload.get("remember", True)),
+                )
+                score_session(
+                    paper_session_id(workspace),
+                    "math_judge_human_agreement",
+                    1.0 if rating == "agree" else 0.0,
+                    data_type="BOOLEAN",
+                    comment=(
+                        feedback[:500]
+                        if feedback and capture_content()
+                        else f"User marked the math judge {rating}."
+                    ),
+                    metadata={
+                        "equationId": str(explanation.get("equation_id") or ""),
+                        "dimension": str(payload.get("dimension") or "overall"),
+                        "remembered": bool(payload.get("remember", True)),
                     },
                 )
                 self._json({"ok": True, "feedback": record})
