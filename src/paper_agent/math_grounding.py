@@ -23,12 +23,13 @@ class MathContextBundle:
     anchor_terms: list[str]
 
 
-_BASE = r"(?:\\(?:mathcal|mathbf|mathrm)\{[^{}]+\}|\\ell|\\[A-Za-z]+|[A-Za-z])"
+_BASE = r"(?:\\(?:mathbb|mathcal|mathbf|mathrm)\{[^{}]+\}|\\ell|\\[A-Za-z]+|[A-Za-z])"
 _SCRIPT = r"(?:[_^](?:\{(?:[^{}]|\{[^{}]*\})*\}|[A-Za-z0-9]))"
 _TOKEN_RE = re.compile(rf"{_BASE}(?:{_SCRIPT})*")
 _SKIP_COMMANDS = {
     r"\frac",
     r"\sum",
+    r"\bigcup",
     r"\left",
     r"\right",
     r"\text",
@@ -42,7 +43,8 @@ _INDEX_SYMBOLS = {"t", "s", "i", "j", "h", "l", "k"}
 
 
 def extract_latex_symbols(latex: str) -> list[str]:
-    cleaned = re.sub(r"\\text\{([^{}]*)\}", r"\1", latex)
+    cleaned = re.sub(r"\\(?:begin|end)\{[^{}]+\}", " ", latex)
+    cleaned = re.sub(r"\\text\{([^{}]*)\}", r"\1", cleaned)
     symbols: list[str] = []
     for match in _TOKEN_RE.finditer(cleaned):
         token = match.group(0)
@@ -65,11 +67,22 @@ def extract_latex_symbols(latex: str) -> list[str]:
                 r"\sigma",
                 r"\lambda",
             }
-            and not re.match(r"\\(?:mathcal|mathbf|mathrm)", token)
+            and not re.match(r"\\(?:mathbb|mathcal|mathbf|mathrm)", token)
         ):
             continue
         if token not in symbols:
             symbols.append(token)
+    for upper_limit in re.findall(r"\\sum(?:_\{[^{}]*\})?\^\{([A-Za-z])\}", cleaned):
+        if upper_limit not in symbols:
+            symbols.append(upper_limit)
+    for limits in re.findall(
+        r"\\(?:sum|bigcup)(?:_\{([^{}]*)\})?(?:\^\{([^{}]*)\})?",
+        cleaned,
+    ):
+        for expression in limits:
+            for greek in re.findall(r"\\(?:alpha|beta|gamma|lambda|mu|sigma|tau|theta)", expression):
+                if greek not in symbols:
+                    symbols.append(greek)
     return symbols[:24]
 
 
@@ -77,7 +90,7 @@ def _symbol_aliases(symbol: str) -> list[str]:
     compact = symbol.replace(" ", "")
     aliases = [compact]
     plain = compact
-    plain = re.sub(r"\\(?:mathcal|mathbf|mathrm)\{([^{}]+)\}", r"\1", plain)
+    plain = re.sub(r"\\(?:mathbb|mathcal|mathbf|mathrm)\{([^{}]+)\}", r"\1", plain)
     plain = plain.replace(r"\ell", "L")
     plain = plain.replace(r"\gamma", "gamma").replace(r"\alpha", "alpha")
     plain = re.sub(r"\\text\{([^{}]+)\}", r"\1", plain)
@@ -102,12 +115,18 @@ def _symbol_aliases(symbol: str) -> list[str]:
         aliases.extend(["It,s", "lookahead index score", "indexer score"])
     elif key.startswith("yt,s") or key.startswith("yts"):
         aliases.extend(["yt,s", "binary label", "label y"])
+    elif key.startswith("yt"):
+        aliases.extend(["Y+t", "positive ground-truth label set", "positive label set"])
+    elif key.startswith("ai") and "golden" in key:
+        aliases.extend(["Agolden", "golden entries", "core active entry"])
+    elif key == "tau":
+        aliases.extend(["τ", "lookahead window", "future temporal window"])
     return list(dict.fromkeys(alias for alias in aliases if alias))
 
 
 def _symbol_key(symbol: str) -> str:
     value = symbol.lower().replace(" ", "")
-    value = re.sub(r"\\(?:mathcal|mathbf|mathrm|text)", "", value)
+    value = re.sub(r"\\(?:mathbb|mathcal|mathbf|mathrm|text)", "", value)
     value = value.replace(r"\ell", "l").replace(r"\gamma", "gamma")
     return re.sub(r"[{}_^\\()]", "", value)
 
@@ -151,6 +170,41 @@ def _line_windows(
 def _known_meaning(symbol: str, context: str) -> tuple[str, str]:
     key = _symbol_key(symbol)
     low = context.casefold()
+    if key.startswith("vi,s") or key == "vis":
+        source = "paper" if "voting score" in low or "majority voting" in low else "inference"
+        return (
+            "Cross-layer voting score: the number of layers that selected entry s at token step i.",
+            source,
+        )
+    if key.startswith("mi,l") or key == "mil":
+        source = "paper" if "selected by layer" in low or "top-p" in low else "inference"
+        return (
+            "The Top-p-selected set of historical entries for token i at layer l.",
+            source,
+        )
+    if key == "i" and r"\mathbb" in symbol:
+        return "Indicator function, equal to 1 when its condition is true and 0 otherwise.", "paper"
+    if key == "l" and ("all l layers" in low or "l = 21" in low):
+        return "Total number of model layers participating in cross-layer voting.", "paper"
+    if key.startswith("yt"):
+        source = (
+            "paper"
+            if "positive ground-truth label set" in low or "positive label set" in low
+            else "inference"
+        )
+        return (
+            "Positive ground-truth label set assembled for the lookahead window beginning at token t.",
+            source,
+        )
+    if key.startswith("ai") and "golden" in key:
+        source = "paper" if "golden entr" in low or "core active entr" in low else "inference"
+        return (
+            "Denoised golden-entry set selected for future token i by cross-layer consensus.",
+            source,
+        )
+    if key == "tau":
+        source = "paper" if "lookahead" in low or "future temporal window" in low else "inference"
+        return "Number of future decoding steps included in the lookahead window.", source
     if key in {"lfl", "mathcallfl"} and "focal loss" in low:
         return "The sample-averaged focal-loss training objective.", "paper"
     if key == "s" and r"\mathcal" in symbol:
@@ -193,6 +247,84 @@ def _known_meaning(symbol: str, context: str) -> tuple[str, str]:
             source,
         )
     return "", "unresolved"
+
+
+def _clean_evidence_excerpt(value: str, max_chars: int = 520) -> str:
+    clean = re.sub(r"[\x00-\x1f\ue000-\uf8ff]", " ", value)
+    clean = re.sub(r"\s+", " ", clean).strip(" •")
+    step = re.search(r"(?:•\s*)?Step\s+\d+\s*:", clean, re.I)
+    if step and step.start() > 0:
+        clean = clean[step.start() :].lstrip("• ")
+    clean = re.sub(r"^\(\d+\)\s*[•·]?\s*", "", clean)
+    if clean.casefold().startswith("as selected by layer"):
+        clean = "An entry s is marked " + clean
+    colon = clean.rfind(":")
+    if colon > 60:
+        tail = clean[colon + 1 :]
+        noise = len(re.findall(r"[=∈∑]", tail))
+        if "=" in tail or noise >= 2:
+            clean = clean[:colon].rstrip() + "."
+    sentences = re.split(r"(?<=[.!?])\s+", clean)
+    excerpt = " ".join(sentences[:3]).strip()
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:") + "..."
+    elif excerpt and excerpt[-1] not in ".!?":
+        excerpt = excerpt.rstrip(" ,;:") + "..."
+    return excerpt
+
+
+def _evidence_is_redundant(candidate: str, existing: list[str]) -> bool:
+    candidate_words = set(re.findall(r"[a-z0-9]+", candidate.casefold()))
+    if len(candidate_words) < 6:
+        return False
+    for item in existing:
+        item_words = set(re.findall(r"[a-z0-9]+", item.casefold()))
+        smaller = min(len(candidate_words), len(item_words))
+        if smaller >= 6 and len(candidate_words & item_words) / smaller >= 0.6:
+            return True
+    return False
+
+
+def contextual_math_evidence(context: str, limit: int = 3) -> list[str]:
+    """Extract concise paper sentences when symbol-level retrieval has no hit."""
+    clean = re.sub(
+        r"(?:^|\n)(?:Current page \d+|PDF-region context|Symbol-definition evidence):\s*",
+        "\n",
+        context,
+        flags=re.I,
+    )
+    clean = re.sub(r"[\x00-\x1f\ue000-\uf8ff]", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    if not clean:
+        return []
+
+    signal = re.compile(
+        r"\b(?:where|define[ds]?|denote[ds]?|establish(?:ed)?|union|label set|"
+        r"lookahead|voting|score|selected|entry|window|threshold)\b",
+        re.I,
+    )
+    sentences = [
+        item.strip()
+        for item in re.split(r"(?<=[.!?])\s+", clean)
+        if len(item.strip()) >= 35
+    ]
+    ranked = sorted(
+        enumerate(sentences),
+        key=lambda item: (bool(signal.search(item[1])), len(signal.findall(item[1])), -item[0]),
+        reverse=True,
+    )
+    evidence: list[str] = []
+    for _, sentence in ranked:
+        excerpt = _clean_evidence_excerpt(sentence)
+        if (
+            excerpt
+            and not _evidence_is_redundant(excerpt, evidence)
+            and excerpt not in evidence
+        ):
+            evidence.append(excerpt)
+        if len(evidence) >= max(1, limit):
+            break
+    return evidence
 
 
 def _anchor_terms(latex: str, raw: str) -> list[str]:
@@ -260,13 +392,20 @@ def build_math_context(
         symbol_evidence = best[2] if best else ""
         symbol_page = best[1] if best else None
         symbols.append(SymbolGrounding(symbol, meaning, source, symbol_evidence, symbol_page))
-        if symbol_evidence and symbol_evidence not in evidence:
-            evidence.append(symbol_evidence)
+        evidence_excerpt = _clean_evidence_excerpt(symbol_evidence)
+        if (
+            evidence_excerpt
+            and evidence_excerpt not in evidence
+            and not _evidence_is_redundant(evidence_excerpt, evidence)
+        ):
+            evidence.append(evidence_excerpt)
 
     context_parts = [f"Current page {page}:\n{local}"] if local else []
     for item in evidence[:6]:
         if item not in local:
             context_parts.append(f"Symbol-definition evidence:\n{item}")
+    if not evidence:
+        evidence.extend(contextual_math_evidence(local, limit=3))
     return MathContextBundle(
         context="\n\n".join(context_parts)[:12_000],
         symbols=symbols,

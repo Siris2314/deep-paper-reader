@@ -112,94 +112,120 @@ def _layout_evidence(group: list[dict[str, Any]]) -> dict[str, object]:
 
 
 def _geometry_latex(spans: list[dict[str, object]]) -> str:
-    blocks: dict[int, list[dict[str, object]]] = {}
-    for span in spans:
-        blocks.setdefault(int(span["source_block"]), []).append(span)
-    rows: list[str] = []
+    if not spans:
+        return ""
+
+    def center(span: dict[str, object]) -> float:
+        return (float(span["top"]) + float(span["bottom"])) / 2
+
+    def normalize(span: dict[str, object]) -> str:
+        text = str(span["text"]).strip()
+        font = str(span.get("font") or "").casefold()
+        if "extension" in font and text in {"X", "∑", "Σ"}:
+            return r"\sum"
+        if "extension" in font and text == "[":
+            return r"\bigcup"
+        if "msbm" in font and text == "I":
+            return r"\mathbb{I}"
+        if "roman" in font and len(text) > 1 and text.isalpha():
+            return rf"\mathrm{{{text}}}"
+        replacements = {
+            "·": r"\cdot",
+            "∈": r"\in ",
+            "≤": r"\le ",
+            "≥": r"\ge ",
+            "−": "-",
+            "τ": r"\tau",
+        }
+        for source, target in replacements.items():
+            text = text.replace(source, target)
+        return text.replace(". . .", r"\ldots")
+
+    max_size = max(float(span["size"]) for span in spans)
+    main_spans = [span for span in spans if float(span["size"]) >= max_size * 0.85]
+    script_spans = [span for span in spans if float(span["size"]) < max_size * 0.85]
+    if not main_spans:
+        return ""
+
+    row_groups: list[list[dict[str, object]]] = []
+    for span in sorted(main_spans, key=lambda item: (center(item), float(item["x"]))):
+        target_row = next(
+            (
+                row
+                for row in row_groups
+                if abs(center(span) - sum(center(item) for item in row) / len(row))
+                <= max_size * 0.45
+            ),
+            None,
+        )
+        if target_row is None:
+            row_groups.append([span])
+        else:
+            target_row.append(span)
+
+    rendered_rows: list[str] = []
     script_count = 0
-    for block_spans in blocks.values():
-        max_size = max(float(span["size"]) for span in block_spans)
-        main = [span for span in block_spans if float(span["size"]) >= max_size * 0.85]
-        if not main:
-            continue
-        baseline = sorted((float(span["top"]) + float(span["bottom"])) / 2 for span in main)[
-            len(main) // 2
-        ]
-        atoms: list[dict[str, object]] = []
-        last_script: dict[str, object] | None = None
-        for span in block_spans:
-            text = str(span["text"]).strip()
-            size = float(span["size"])
-            center = (float(span["top"]) + float(span["bottom"])) / 2
-            if size >= max_size * 0.85:
-                normalized = text.replace("·", r"\cdot").replace(". . .", r"\ldots")
-                atoms.append({"base": normalized, "sup": "", "sub": ""})
-                last_script = None
-                continue
-            target = next(
-                (
-                    atom
-                    for atom in reversed(atoms)
-                    if re.search(r"[A-Za-z0-9}\]]$", str(atom["base"]))
-                ),
-                None,
-            )
-            if target is None:
-                continue
-            if size < max_size * 0.6 and last_script is not None:
-                parent_center = float(last_script["center"])
-                nested_position = "sup" if center < parent_center else "sub"
-                last_script[nested_position] = str(last_script.get(nested_position) or "") + text
-                script_count += 1
-                continue
-            position = "sup" if center < baseline - max_size * 0.08 else "sub"
-            target[position] = str(target[position]) + text
-            last_script = {
-                "target": target,
-                "position": position,
-                "center": center,
+    for row_spans in sorted(row_groups, key=lambda row: sum(center(item) for item in row) / len(row)):
+        baseline = sorted(center(span) for span in row_spans)[len(row_spans) // 2]
+        atoms = [
+            {
+                "base": normalize(span),
+                "x": float(span["x"]),
                 "sup": "",
                 "sub": "",
             }
-            target[f"_{position}_meta"] = last_script
+            for span in sorted(row_spans, key=lambda item: float(item["x"]))
+        ]
+        nearby_scripts = [
+            span
+            for span in script_spans
+            if abs(center(span) - baseline) <= max_size * 1.7
+        ]
+        for span in sorted(nearby_scripts, key=lambda item: float(item["x"])):
+            script_x = float(span["x"])
+            candidates = [
+                atom
+                for atom in atoms
+                if (
+                    float(atom["x"]) <= script_x + 3
+                    or (
+                        str(atom["base"]) in {r"\sum", r"\bigcup"}
+                        and abs(float(atom["x"]) - script_x) <= 12
+                    )
+                )
+                and re.search(r"[A-Za-z0-9}\]]$", str(atom["base"]))
+            ]
+            if not candidates:
+                continue
+            target = min(candidates, key=lambda atom: abs(script_x - float(atom["x"])))
+            position = "sup" if center(span) < baseline - max_size * 0.08 else "sub"
+            target[position] = str(target[position]) + normalize(span)
             script_count += 1
 
         rendered: list[str] = []
         for atom in atoms:
             base = str(atom["base"])
-            sub = str(atom.get("sub") or "")
-            sup = str(atom.get("sup") or "")
-            for position in ("sub", "sup"):
-                meta = atom.get(f"_{position}_meta")
-                if isinstance(meta, dict):
-                    nested_sub = str(meta.get("sub") or "")
-                    nested_sup = str(meta.get("sup") or "")
-                    value = sub if position == "sub" else sup
-                    if nested_sub:
-                        value += f"_{{{nested_sub}}}"
-                    if nested_sup:
-                        value += f"^{{{nested_sup}}}"
-                    if position == "sub":
-                        sub = value
-                    else:
-                        sup = value
+            sub = str(atom["sub"])
+            sup = str(atom["sup"])
             if sub:
                 base += f"_{{{sub}}}"
             if sup:
                 base += f"^{{{sup}}}"
             rendered.append(base)
         row = " ".join(rendered)
-        row = re.sub(r"\[\s+", "[", row)
-        row = re.sub(r"\s+([\],;])", r"\1", row)
-        row = row.replace(". ", ". ")
-        row = row.replace(" = ", " &= ", 1)
-        rows.append(row)
-    if not rows or script_count == 0 or not any("=" in row for row in rows):
+        row = re.sub(r"\s+([),.;])", r"\1", row)
+        row = re.sub(r"([([])\s+", r"\1", row)
+        row = re.sub(r"\\in\s+M", r"\\in M", row)
+        rendered_rows.append(row)
+
+    if not rendered_rows or script_count == 0 or not any("=" in row for row in rendered_rows):
         return ""
     latex = (
-        rows[0].replace("&=", "=")
-        if len(rows) == 1
-        else r"\begin{aligned} " + r" \\ ".join(rows) + r" \end{aligned}"
+        rendered_rows[0]
+        if len(rendered_rows) == 1
+        else r"\begin{aligned} "
+        + r" \\ ".join(row.replace(" = ", " &= ", 1) for row in rendered_rows)
+        + r" \end{aligned}"
     )
     if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ue000-\uf8ff]", latex):
         return ""

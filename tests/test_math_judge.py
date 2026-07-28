@@ -1,3 +1,6 @@
+from contextlib import contextmanager
+
+import paper_agent.math_judge as math_judge
 from paper_agent.math_judge import (
     MathJudgePayload,
     JudgeScore,
@@ -37,6 +40,28 @@ def test_deterministic_judge_rejects_missing_latex():
     checks = deterministic_math_checks(payload)
 
     assert checks["latex_present"] is False
+
+
+def test_deterministic_judge_rejects_malformed_inline_math():
+    payload = explanation_payload()
+    payload["steps"] = [
+        "Sort $ ext{Sorted}(P)$.",
+        "Compare $x imes y$ before returning the selected set.",
+    ]
+
+    checks = deterministic_math_checks(payload)
+
+    assert checks["inline_math_valid"] is False
+    assert any("damaged LaTeX command" in issue for issue in checks["inline_math_issues"])
+
+
+def test_deterministic_judge_accepts_supported_dots_notation():
+    payload = explanation_payload()
+    payload["steps"] = [r"Read the sequence $x_1, x_2, \dots, x_n$."]
+
+    checks = deterministic_math_checks(payload)
+
+    assert checks["inline_math_valid"] is True
 
 
 def test_independent_math_judge_scores_and_justifies(tmp_path):
@@ -101,6 +126,52 @@ def test_default_judge_uses_direct_json_schema_output(tmp_path):
     assert result.overall_score == 4.0
 
 
+def test_judge_trace_names_identify_repair_phase(tmp_path, monkeypatch):
+    observed_names = []
+
+    @contextmanager
+    def fake_stage(name, **kwargs):
+        observed_names.append(name)
+
+        class Stage:
+            def update(self, **values):
+                pass
+
+        yield Stage()
+
+    def fake_invoke(runnable, payload, *, name, **kwargs):
+        observed_names.append(name)
+        return runnable.invoke(payload)
+
+    score = JudgeScore(score=4, justification="The explanation is supported and useful.")
+
+    class FakeJudge:
+        def invoke(self, payload):
+            return {
+                "structured_response": MathJudgePayload(
+                    correctness=score,
+                    paper_grounding=score,
+                    symbol_coverage=score,
+                    latex_fidelity=score,
+                    usefulness=score,
+                    summary="A grounded explanation.",
+                    issues=[],
+                )
+            }
+
+    monkeypatch.setattr(math_judge, "observed_stage", fake_stage)
+    monkeypatch.setattr(math_judge, "invoke_observed", fake_invoke)
+    evaluate_math_explanation(
+        Workspace(tmp_path / "workspace"),
+        explanation_payload(),
+        chat_model=object(),
+        agent_factory=lambda **kwargs: FakeJudge(),
+        phase="repair-1",
+    )
+
+    assert observed_names == ["validate-repair-1", "judge-after-repair-1"]
+
+
 def test_deterministic_failure_overrides_generous_judge(tmp_path):
     class GenerousJudge:
         def invoke(self, payload):
@@ -128,3 +199,33 @@ def test_deterministic_failure_overrides_generous_judge(tmp_path):
 
     assert result.verdict == "fail"
     assert any("No display LaTeX" in issue for issue in result.issues)
+
+
+def test_malformed_inline_math_overrides_generous_judge(tmp_path):
+    class GenerousJudge:
+        def invoke(self, payload):
+            score = JudgeScore(score=5, justification="Looks good.")
+            return {
+                "structured_response": MathJudgePayload(
+                    correctness=score,
+                    paper_grounding=score,
+                    symbol_coverage=score,
+                    latex_fidelity=score,
+                    usefulness=score,
+                    summary="Generous assessment.",
+                    issues=[],
+                )
+            }
+
+    payload = explanation_payload()
+    payload["plain_english"] = "The value is $x imes y$."
+    result = evaluate_math_explanation(
+        Workspace(tmp_path / "workspace"),
+        payload,
+        chat_model=object(),
+        agent_factory=lambda **kwargs: GenerousJudge(),
+    )
+
+    assert result.verdict == "fail"
+    assert result.deterministic_checks["inline_math_valid"] is False
+    assert any("damaged LaTeX command" in issue for issue in result.issues)

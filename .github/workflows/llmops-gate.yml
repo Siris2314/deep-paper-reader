@@ -1,0 +1,59 @@
+name: LLMOps quality gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: Score lookback window
+        required: true
+        default: "168"
+      allow_insufficient_data:
+        description: Do not fail while the evaluation dataset is still small
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      LANGFUSE_ENABLED: "true"
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+      LANGFUSE_TRACING_ENVIRONMENT: ${{ vars.LANGFUSE_TRACING_ENVIRONMENT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[observability]"
+      - name: Validate Langfuse configuration
+        shell: bash
+        run: |
+          test -n "$LANGFUSE_PUBLIC_KEY" || (echo "Missing LANGFUSE_PUBLIC_KEY secret" && exit 2)
+          test -n "$LANGFUSE_SECRET_KEY" || (echo "Missing LANGFUSE_SECRET_KEY secret" && exit 2)
+          echo "LANGFUSE_BASE_URL=${LANGFUSE_BASE_URL:-https://us.cloud.langfuse.com}" >> "$GITHUB_ENV"
+          echo "LANGFUSE_TRACING_ENVIRONMENT=${LANGFUSE_TRACING_ENVIRONMENT:-development}" >> "$GITHUB_ENV"
+      - name: Run strict quality gate
+        if: ${{ !inputs.allow_insufficient_data }}
+        run: >-
+          python -m paper_agent.cli llmops-gate
+          --lookback-hours "${{ inputs.lookback_hours }}"
+      - name: Run exploratory quality gate
+        if: ${{ inputs.allow_insufficient_data }}
+        run: >-
+          python -m paper_agent.cli llmops-gate
+          --lookback-hours "${{ inputs.lookback_hours }}"
+          --allow-insufficient-data
+      - name: Upload gate report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: llmops-gate-report
+          path: llmops/reports/latest.json
+          if-no-files-found: warn

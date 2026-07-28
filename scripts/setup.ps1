@@ -1,5 +1,6 @@
 param(
     [switch]$Dev,
+    [switch]$Observability,
     [switch]$SkipHardware
 )
 
@@ -17,7 +18,10 @@ if (-not (Test-Path ".\.venv\Scripts\python.exe")) {
 
 $VenvPython = (Resolve-Path ".\.venv\Scripts\python.exe").Path
 & $VenvPython -m pip install --upgrade pip
-$InstallTarget = if ($Dev) { ".[dev]" } else { "." }
+$Extras = @()
+if ($Dev) { $Extras += "dev" }
+if ($Observability) { $Extras += "observability" }
+$InstallTarget = if ($Extras.Count -gt 0) { ".[$($Extras -join ',')]" } else { "." }
 & $VenvPython -m pip install -e $InstallTarget
 
 if (-not (Test-Path ".\.env")) {

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from paper_agent.agents import build_chat_model
 from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage, response_schema_text
+from paper_agent.observability import invoke_observed, observed_stage
 from paper_agent.workspace import Workspace
 
 
@@ -47,6 +48,120 @@ class MathJudgePayload(BaseModel):
     usefulness: JudgeScore
     summary: str
     issues: list[str] = Field(default_factory=list)
+
+
+_INLINE_MATH_FIELDS = (
+    "plain_english",
+    "intuition",
+    "dimensional_analysis",
+    "implementation_view",
+    "context_fit",
+)
+_SUPPORTED_INLINE_COMMANDS = {
+    "alpha",
+    "approx",
+    "argmax",
+    "argmin",
+    "bar",
+    "beta",
+    "bigcup",
+    "cdot",
+    "cup",
+    "dots",
+    "ell",
+    "exp",
+    "exists",
+    "frac",
+    "gamma",
+    "geq",
+    "hat",
+    "in",
+    "infty",
+    "ldots",
+    "leq",
+    "left",
+    "limits",
+    "log",
+    "lvert",
+    "mathbb",
+    "mathbf",
+    "mathcal",
+    "max",
+    "mathrm",
+    "middle",
+    "min",
+    "mu",
+    "nabla",
+    "ne",
+    "neq",
+    "notin",
+    "nu",
+    "omega",
+    "operatorname",
+    "overline",
+    "partial",
+    "phi",
+    "prod",
+    "propto",
+    "psi",
+    "quad",
+    "qquad",
+    "rho",
+    "right",
+    "rightarrow",
+    "rvert",
+    "sigma",
+    "sim",
+    "sqrt",
+    "subset",
+    "subseteq",
+    "sum",
+    "tau",
+    "text",
+    "theta",
+    "tilde",
+    "times",
+    "to",
+    "underbrace",
+    "underline",
+    "vert",
+    "forall",
+}
+
+
+def _inline_math_issues(explanation: dict[str, Any]) -> list[str]:
+    values = [str(explanation.get(name) or "") for name in _INLINE_MATH_FIELDS]
+    for name in ("steps", "assumptions_or_missing_details"):
+        items = explanation.get(name)
+        if isinstance(items, list):
+            values.extend(str(item or "") for item in items)
+
+    issues: list[str] = []
+    for field_text in values:
+        segments = [
+            match.group(1) or match.group(2) or ""
+            for match in re.finditer(r"\$([\s\S]*?)\$|\\\(([\s\S]*?)\\\)", field_text)
+        ]
+        for segment in segments:
+            if re.search(r"[\x00-\x1f]", segment):
+                issues.append("Inline math contains a decoded JSON control character.")
+            if segment.count("{") != segment.count("}"):
+                issues.append("Inline math has unbalanced braces.")
+            if re.search(r"(?<![A-Za-z\\])(?:ext|imes|oldsymbol|rac)(?:\{|\b)", segment):
+                issues.append(f"Inline math contains a damaged LaTeX command: {segment[:100]}")
+            unsupported = sorted(
+                {
+                    command
+                    for command in re.findall(r"\\([A-Za-z]+)", segment)
+                    if command not in _SUPPORTED_INLINE_COMMANDS
+                }
+            )
+            if unsupported:
+                issues.append(
+                    "Inline math uses unsupported commands: "
+                    + ", ".join(f"\\{command}" for command in unsupported)
+                )
+    return list(dict.fromkeys(issues))[:12]
 
 
 def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
@@ -84,6 +199,7 @@ def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
     dangerous_latex = bool(
         re.search(r"\\(?:href|url|includegraphics|input|write18)\b", latex, re.I)
     )
+    inline_math_issues = _inline_math_issues(explanation)
     return {
         "required_fields_present": not missing_fields,
         "missing_fields": missing_fields,
@@ -102,6 +218,8 @@ def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
             for item in symbols
         ),
         "unsupported_symbol_sources": unsupported_sources,
+        "inline_math_valid": not inline_math_issues,
+        "inline_math_issues": inline_math_issues,
     }
 
 
@@ -177,6 +295,11 @@ def _contradicts_present_latex(text: str, latex: str) -> bool:
     return any(item.replace(" ", "") in latex.replace(" ", "") for item in corrections)
 
 
+def _trace_phase(value: str) -> str:
+    clean = re.sub(r"[^a-z0-9-]+", "-", value.strip().casefold()).strip("-")
+    return clean or "initial"
+
+
 def evaluate_math_explanation(
     workspace: Workspace,
     explanation: dict[str, Any],
@@ -184,8 +307,44 @@ def evaluate_math_explanation(
     *,
     agent_factory: Any | None = None,
     chat_model: Any | None = None,
+    phase: str = "initial",
 ) -> MathJudgeResult:
-    checks = deterministic_math_checks(explanation)
+    phase_key = _trace_phase(phase)
+    with observed_stage(
+        f"validate-{phase_key}",
+        input_data={
+            "displayLatex": explanation.get("display_latex"),
+            "steps": explanation.get("steps"),
+            "symbols": explanation.get("symbols"),
+        },
+        metadata={"phase": phase_key},
+        as_type="guardrail",
+    ) as validation:
+        checks = deterministic_math_checks(explanation)
+        validation.update(
+            output={
+                "valid": bool(
+                    checks["required_fields_present"]
+                    and checks["latex_present"]
+                    and checks["latex_braces_balanced"]
+                    and checks["latex_commands_safe"]
+                    and checks["inline_math_valid"]
+                ),
+                "missingFields": checks["missing_fields"],
+                "inlineMathIssues": checks["inline_math_issues"],
+                "symbolCount": checks["symbol_count"],
+            },
+            metadata={
+                "phase": phase_key,
+                "inlineMathValid": checks["inline_math_valid"],
+                "requiredFieldsPresent": checks["required_fields_present"],
+            },
+            level=(
+                "DEFAULT"
+                if checks["inline_math_valid"] and checks["required_fields_present"]
+                else "WARNING"
+            ),
+        )
     provider = os.getenv(
         "PAPER_READER_JUDGE_PROVIDER", os.getenv("PAPER_READER_AGENT_PROVIDER", "ollama")
     )
@@ -209,7 +368,7 @@ def evaluate_math_explanation(
     judged: dict[str, Any] | None = None
     used_model = "unavailable"
     output_budget = int(os.getenv("PAPER_READER_JUDGE_MAX_TOKENS", "700"))
-    for model_name in model_names:
+    for model_attempt, model_name in enumerate(model_names, start=1):
         current_model = chat_model
         if current_model is None:
             config = RunConfig(
@@ -245,13 +404,33 @@ def evaluate_math_explanation(
                     "structured response schema": response_schema_text(MathJudgePayload),
                 },
                 reserved_output_tokens=output_budget,
-                metadata={"generatorModel": generator},
+                metadata={"generatorModel": generator, "phase": phase_key},
             )
+            judge_name = (
+                "judge-initial"
+                if phase_key == "initial"
+                else f"judge-after-{phase_key}"
+            )
+            if model_attempt > 1:
+                judge_name = f"{judge_name}-fallback-{model_attempt}"
             if use_direct_structured_output and hasattr(current_model, "with_structured_output"):
                 structured_model = current_model.with_structured_output(
                     MathJudgePayload, method="json_schema"
                 )
-                judged = _structured_payload(structured_model.invoke(messages))
+                judged = _structured_payload(
+                    invoke_observed(
+                        structured_model,
+                        messages,
+                        name=judge_name,
+                        model=f"{provider}:{model_name}",
+                        metadata={
+                            "generatorModel": generator,
+                            "phase": phase_key,
+                            "modelAttempt": model_attempt,
+                        },
+                        as_type="evaluator",
+                    )
+                )
                 used_model = f"{provider}:{model_name}"
                 break
             judge = agent_factory(
@@ -261,7 +440,18 @@ def evaluate_math_explanation(
                 name="paper_math_judge",
                 response_format=MathJudgePayload,
             )
-            result = judge.invoke({"messages": [messages[1]]})
+            result = invoke_observed(
+                judge,
+                {"messages": [messages[1]]},
+                name=judge_name,
+                model=f"{provider}:{model_name}",
+                metadata={
+                    "generatorModel": generator,
+                    "phase": phase_key,
+                    "modelAttempt": model_attempt,
+                },
+                as_type="evaluator",
+            )
             judged = _structured_payload(result)
             used_model = f"{provider}:{model_name}"
             break
@@ -326,6 +516,7 @@ def evaluate_math_explanation(
         or not checks["latex_present"]
         or not checks["latex_braces_balanced"]
         or not checks["latex_commands_safe"]
+        or not checks["inline_math_valid"]
         or min(scores) < 2
     )
     verdict = (
@@ -341,6 +532,8 @@ def evaluate_math_explanation(
         issues.append(f"Missing required fields: {', '.join(checks['missing_fields'])}")
     if not checks["latex_present"]:
         issues.append("No display LaTeX was produced.")
+    issues.extend(str(item) for item in checks["inline_math_issues"])
+    issues = list(dict.fromkeys(issues))
     return MathJudgeResult(
         verdict=verdict,
         overall_score=overall,

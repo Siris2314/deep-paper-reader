@@ -11,6 +11,7 @@ from langchain_core.tools import tool
 
 from paper_agent.claim_ledger import add_claim, save_claim_ledger, validate_claims_json
 from paper_agent.config import DEFAULT_OLLAMA_MODEL, RunConfig
+from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
 from paper_agent.parser import ParsedPaper, parsed_artifact_manifest, parsed_summary_for_prompt
 from paper_agent.schemas import ClaimRecord
 from paper_agent.tavily_research import build_tavily_tools, run_tavily_prefetch
@@ -309,8 +310,14 @@ def build_direct_chat_model(config: RunConfig):
     raise ValueError(f"Unsupported model provider: {config.model_provider}")
 
 
-def invoke_text_model(model: Any, prompt: str) -> str:
-    response = model.invoke(prompt)
+def invoke_text_model(
+    model: Any,
+    prompt: str,
+    *,
+    name: str = "direct-model-generation",
+    model_name: str | None = None,
+) -> str:
+    response = invoke_observed(model, prompt, name=name, model=model_name)
     content = getattr(response, "content", None)
     if content is not None:
         return str(content)
@@ -550,7 +557,7 @@ def extract_final_message(result: Any) -> str:
     return str(result)
 
 
-def run_analysis(config: RunConfig, parsed: ParsedPaper) -> str:
+def _run_analysis_impl(config: RunConfig, parsed: ParsedPaper) -> str:
     workspace = Workspace(config.output_dir)
     write_run_config(workspace, config)
     workspace.write_json("logs/skill_manifest.json", skill_manifest())
@@ -584,7 +591,13 @@ def run_analysis(config: RunConfig, parsed: ParsedPaper) -> str:
     workspace.write_text("logs/user_prompt.md", prompt)
 
     try:
-        result = agent.invoke({"messages": [{"role": "user", "content": prompt}]})
+        result = invoke_observed(
+            agent,
+            {"messages": [{"role": "user", "content": prompt}]},
+            name="full-paper-agent",
+            model=f"{config.model_provider}:{config.model}",
+            metadata={"mode": config.mode},
+        )
     except Exception as exc:
         write_exception(workspace, exc)
         raise
@@ -626,7 +639,12 @@ def run_analysis(config: RunConfig, parsed: ParsedPaper) -> str:
             workspace.write_text("scratch/evaluator_repair_prompt.md", repair_prompt)
             try:
                 repair_model = build_direct_chat_model(config)
-                repaired = invoke_text_model(repair_model, repair_prompt).strip()
+                repaired = invoke_text_model(
+                    repair_model,
+                    repair_prompt,
+                    name="report-repair-generation",
+                    model_name=f"{config.model_provider}:{config.model}",
+                ).strip()
                 workspace.write_text("logs/evaluator_repair_raw.txt", repaired)
                 workspace.write_text("final/final_study_guide.repaired.md", repaired + "\n")
                 repaired_eval = evaluate_report_text(parsed, repaired, claim_text)
@@ -675,3 +693,49 @@ def run_analysis(config: RunConfig, parsed: ParsedPaper) -> str:
         encoding="utf-8",
     )
     return final_path.read_text(encoding="utf-8")
+
+
+def run_analysis(config: RunConfig, parsed: ParsedPaper) -> str:
+    workspace = Workspace(config.output_dir)
+    with workflow_trace(
+        "full-paper-analysis",
+        input_data={
+            "paper": parsed.metadata.title_guess,
+            "mode": config.mode,
+            "provider": config.model_provider,
+            "model": config.model,
+        },
+        session_id=paper_session_id(workspace),
+        tags=["report", "paper-reader", config.mode],
+        metadata={
+            "mode": config.mode,
+            "provider": config.model_provider,
+            "model": config.model,
+            "evaluatorEnabled": config.run_evaluator,
+        },
+    ) as trace:
+        final = _run_analysis_impl(config, parsed)
+        evaluation_path = workspace.path("final/report_evaluation.json")
+        evaluation: dict[str, Any] = {}
+        if evaluation_path.exists():
+            try:
+                loaded = json.loads(evaluation_path.read_text(encoding="utf-8"))
+                evaluation = loaded if isinstance(loaded, dict) else {}
+            except Exception:
+                evaluation = {}
+        trace.update(
+            output={"report": final},
+            metadata={
+                "reportCharacters": len(final),
+                "evaluationStatus": evaluation.get("status", "unavailable"),
+            },
+            level="DEFAULT" if evaluation.get("passed", True) else "WARNING",
+        )
+        if evaluation:
+            trace.score(
+                "report_passed",
+                1.0 if evaluation.get("passed") else 0.0,
+                data_type="BOOLEAN",
+            )
+            trace.score("report_score", float(evaluation.get("score") or 0))
+        return final

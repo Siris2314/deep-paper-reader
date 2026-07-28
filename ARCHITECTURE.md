@@ -29,7 +29,7 @@ parsed/       metadata, sections, equations, figures, and tables
 memory/       paper-specific ranked terms
 concepts/     cached concept cards
 web/          Tavily research artifacts
-math/         explanations and independent evaluations
+math/         explanations, independent evaluations, and bounded repair-loop traces
 chat/         durable chat threads, latest result, and paper-local feedback
 research/     cached concept-specific citation lineage
 logs/         run configuration and failures
@@ -55,7 +55,7 @@ Opening a highlighted concept creates a paper-only card immediately. When Tavily
 
 Equation regions are grouped from PDF geometry and, for display equations, cropped for the multimodal math model. The workflow separates four stages: faithful transcription, deterministic symbol extraction, position-sensitive symbol-definition retrieval, and a compact reasoning call. This prevents one slow model call from discarding usable perception and grounding work. When reasoning fails, the UI receives a grounded deterministic explanation instead of a generic parser-only card.
 
-An independent judge scores correctness, grounding, symbol coverage, LaTeX fidelity, and usefulness. Judge output never silently rewrites the explanation.
+An independent judge scores correctness, grounding, symbol coverage, LaTeX fidelity, and usefulness. A failed or review verdict can trigger a bounded, targeted revision, but the recovered equation, paper evidence, and paper-sourced symbols remain fixed. Revisions are accepted only after an improved independent score, and the full stopping trace is persisted.
 
 The local runtime intentionally uses two primary model weights: `qwen3.5:4b` generates math explanations, while `qwen2.5:7b` handles concept relevance and judges math output. This keeps the judge independent from the math generator without forcing a third large model through limited VRAM.
 
@@ -95,3 +95,11 @@ Ordinary read-only questions do not interrupt for approval. User feedback become
 ## Memory and skills
 
 `AGENTS.md` contains only stable project rules. User-confirmed missed terms live under `agent_memory/`, while paper-specific artifacts stay in each workspace. Detailed workflows are loaded from `skills/*/SKILL.md` only when their capability is needed.
+
+## LLMOps
+
+`observability.py` provides an optional Langfuse adapter. Upload/parse, concept enrichment, math generation and evaluation, paper chat, and full-report analysis emit one workflow trace with nested model observations. Paper workspaces become sessions. Existing deterministic checks, judge dimensions, repair counts, and user feedback are exported as native scores.
+
+Raw paper text, prompts, answers, and score comments are hashed by default. Full content reaches Langfuse only when `LANGFUSE_CAPTURE_CONTENT=true`. A missing SDK, missing key, or telemetry failure turns the adapter into a no-op and cannot retry or fail an inference call.
+
+`llmops_gate.py` reads recent Langfuse scores and evaluates the committed thresholds in `llmops/gate.json`. It emits a machine-readable diagnosis and a nonzero exit code for regressions or insufficient required samples. The same gate runs through the manually triggered GitHub workflow. Passing the gate does not automatically promote prompts, models, or code; release remains an explicit human decision.

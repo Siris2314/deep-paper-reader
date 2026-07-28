@@ -29,6 +29,14 @@ from paper_agent.concept_enrichment import enrich_concept_card  # noqa: E402
 from paper_agent.context_diagnostics import context_diagnostics_payload  # noqa: E402
 from paper_agent.math_agent import explain_equation  # noqa: E402
 from paper_agent.math_regions import extract_math_regions  # noqa: E402
+from paper_agent.observability import (  # noqa: E402
+    capture_content,
+    flush_observability,
+    observability_status,
+    paper_session_id,
+    score_session,
+    workflow_trace,
+)
 from paper_agent.paper_chat import (  # noqa: E402
     load_chat_thread,
     record_chat_feedback,
@@ -56,7 +64,7 @@ from paper_agent.workspace import Workspace  # noqa: E402
 UPLOAD_ROOT = REPO_ROOT / "uploaded_papers"
 REPORT_ROOT = REPO_ROOT / "paper_reports"
 DEFAULT_PORT = int(os.getenv("PAPER_READER_PORT", "8503"))
-BUILD_LABEL = "reader-build-2026-07-22-release-ui-v28"
+BUILD_LABEL = "reader-build-2026-07-28-feedback-loop-v31"
 ENRICHMENT_JOB_TIMEOUT = max(30.0, min(float(os.getenv("ENRICHMENT_JOB_TIMEOUT", "240")), 600.0))
 ENRICHMENT_JOBS: dict[str, dict[str, object]] = {}
 ENRICHMENT_LOCK = threading.RLock()
@@ -362,12 +370,31 @@ def parse_uploaded_pdf(filename: str, data: bytes) -> tuple[Workspace, ParsedPap
     if not pdf_path.exists() or pdf_path.read_bytes() != data:
         pdf_path.write_bytes(data)
     workspace = Workspace(workspace_for_pdf(pdf_path))
-    workspace.reset()
-    parsed = parse_paper(pdf_path, workspace.root)
-    save_concept_index(parsed, workspace)
-    save_significant_terms(parsed, workspace)
-    workspace.write_text("logs/active_pdf.txt", f"source_pdf={pdf_path}\n")
-    return workspace, parsed
+    with workflow_trace(
+        "paper-upload-and-parse",
+        input_data={"filename": filename, "pdf": data},
+        session_id=paper_session_id(workspace),
+        tags=["parser", "paper-reader"],
+        metadata={"pdfBytes": len(data), "pdfHash": short_hash(data)},
+        as_type="chain",
+    ) as trace:
+        workspace.reset()
+        parsed = parse_paper(pdf_path, workspace.root)
+        save_concept_index(parsed, workspace)
+        terms = save_significant_terms(parsed, workspace)
+        workspace.write_text("logs/active_pdf.txt", f"source_pdf={pdf_path}\n")
+        trace.update(
+            output={
+                "pages": parsed.metadata.page_count,
+                "equations": len(parsed.equation_cards),
+                "figures": len(parsed.figure_cards),
+                "tables": len(parsed.table_cards),
+                "significantTerms": len(terms),
+            }
+        )
+        trace.score("parse_succeeded", 1.0, data_type="BOOLEAN")
+        trace.score("parse_pages", float(parsed.metadata.page_count))
+        return workspace, parsed
 
 
 def load_workspace(workspace_arg: str | None = None) -> tuple[Workspace, ParsedPaper]:
@@ -585,6 +612,7 @@ def state_payload(workspace: Workspace, parsed: ParsedPaper) -> dict[str, object
         "figureCount": len(parsed.figure_cards),
         "tableCount": len(parsed.table_cards),
         "tavilyReady": bool(os.getenv("TAVILY_API_KEY")),
+        "observability": observability_status(),
         "chat": {
             "ready": True,
             "modes": ["fast", "deep", "web", "explore"],
@@ -1073,7 +1101,18 @@ APP_HTML = r"""<!doctype html>
     .concept-details { padding: 11px 0; border-bottom: 1px solid var(--line); }
     .concept-details > summary { cursor: pointer; color: #344054; font-size: 13px; font-weight: 700; }
     .concept-details[open] > summary { margin-bottom: 9px; }
-    .inline-tech-math { white-space: nowrap; }
+    .inline-tech-math, .inline-math-source { white-space: nowrap; }
+    .inline-math-fallback {
+      display: inline;
+      border: 0;
+      border-radius: 3px;
+      background: #f2f4f7;
+      color: #344054;
+      padding: 1px 3px;
+      font: 0.92em/1.35 "Cascadia Mono", Consolas, monospace;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
     .section-list { display: grid; gap: 5px; max-height: 210px; overflow-y: auto; }
     .section-link {
       text-align: left;
@@ -1142,6 +1181,16 @@ APP_HTML = r"""<!doctype html>
       white-space: pre;
     }
     .math-symbol { white-space: nowrap; font-size: 15px; }
+    .symbol-source { color: #475467; font-size: 12px; text-transform: capitalize; }
+    .role-copy { color: #24324a; font-weight: 650; text-transform: none; }
+    .paper-evidence { list-style: none; padding-left: 0; }
+    .paper-evidence li {
+      border-left: 2px solid #b8c4d4;
+      padding: 2px 0 2px 10px;
+      margin-bottom: 9px;
+      color: #344054;
+    }
+    .judge-details > summary { display: flex; align-items: center; gap: 8px; }
     .judge-panel { border: 1px solid #cfd8e5; border-radius: 7px; padding: 12px; background: #f9fbfd; }
     .judge-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .judge-verdict { border-radius: 999px; padding: 4px 8px; font-size: 12px; font-weight: 750; text-transform: uppercase; }
@@ -1385,7 +1434,7 @@ APP_HTML = r"""<!doctype html>
         <div class="app-heading">
           <h1 id="paperTitle">Paper workspace</h1>
           <div id="paperMeta" class="paper-meta">Open a PDF to begin.</div>
-          <span id="buildLabel" class="build-label">reader-build-2026-07-22-release-ui-v28</span>
+          <span id="buildLabel" class="build-label">reader-build-2026-07-28-feedback-loop-v31</span>
         </div>
         <div id="stats" class="stat-grid"></div>
       </header>
@@ -1469,7 +1518,7 @@ APP_HTML = r"""<!doctype html>
     </div>
   </div>
   <script>
-    const BUILD_LABEL = 'reader-build-2026-07-22-release-ui-v28';
+    const BUILD_LABEL = 'reader-build-2026-07-28-feedback-loop-v31';
     const state = { workspace: null, pages: [], sections: [], terms: [], termMap: new Map(), metadata: null, pageLayouts: new Map(), selectionPage: null, mathExplanations: new Map(), mathPending: new Set(), threadId: null, chatMode: 'fast', chatBusy: false, lastQuestion: '', chatQuestions: new Map() };
     const autoWebAttempted = new Set();
     let mathHoverTimer = null;
@@ -2042,10 +2091,78 @@ APP_HTML = r"""<!doctype html>
       typesetMath(pop);
     }
 
+    function normalizeInlineLatex(value) {
+      return String(value || '')
+        .replace(/^\$|\$$/g, '')
+        .replace(/^\\\(|\\\)$/g, '')
+        .replace(/\u0008/g, '\\b')
+        .replace(/\u0009/g, '\\t')
+        .replace(/\u000a/g, '\\n')
+        .replace(/\u000c/g, '\\f')
+        .replace(/\u000d/g, '\\r')
+        .replace(/\\{2,}(?=[A-Za-z])/g, '\\')
+        .replaceAll('\\nlimits', '\\limits')
+        .replace(/\\boldsymbol/g, '\\mathbf')
+        .replace(/(^|[^A-Za-z\\])ext\{/g, '$1\\text{')
+        .replace(/(^|[^A-Za-z\\])imes\b/g, '$1\\times')
+        .replace(/(^|[^A-Za-z\\])oldsymbol\{/g, '$1\\mathbf{')
+        .replace(/(^|[^A-Za-z\\])rac\{/g, '$1\\frac{')
+        .replace(/(^|[^A-Za-z\\])mathcal\{/g, '$1\\mathcal{')
+        .trim();
+    }
+
+    function inlineLatexIsSafe(latex) {
+      if (!latex || /[\u0000-\u001f]/.test(latex)) return false;
+      if ((latex.match(/\{/g) || []).length !== (latex.match(/\}/g) || []).length) return false;
+      if (/\\(?:href|url|includegraphics|input|write18)\b/i.test(latex)) return false;
+      if (/(^|[^A-Za-z\\])(?:ext|imes|oldsymbol|rac)(?:\{|\b)/.test(latex)) return false;
+      return !/\\(?:n|t|b|r|f)(?![A-Za-z])/.test(latex);
+    }
+
+    function readableInlineMath(value) {
+      return normalizeInlineLatex(value)
+        .replace(/\\(?:text|mathrm|mathbf|mathcal|mathbb|operatorname)\{([^{}]*)\}/g, '$1')
+        .replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)')
+        .replace(/\\(?:leq|le)\b/g, '≤')
+        .replace(/\\(?:geq|ge)\b/g, '≥')
+        .replace(/\\(?:neq|ne)\b/g, '≠')
+        .replace(/\\in\b/g, '∈')
+        .replace(/\\times\b/g, '×')
+        .replace(/\\cdot\b/g, '·')
+        .replace(/\\sum\b/g, 'Σ')
+        .replace(/\\[A-Za-z]+/g, '')
+        .replace(/[{}]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function renderInlineMath(token) {
+      const latex = normalizeInlineLatex(token);
+      if (!inlineLatexIsSafe(latex)) {
+        return `<code class="inline-math-fallback">${escapeHtml(readableInlineMath(latex) || latex)}</code>`;
+      }
+      return `<span class="inline-math-source" data-latex="${escapeHtml(latex)}">\\(${escapeHtml(latex)}\\)</span>`;
+    }
+
     function formatInline(text) {
-      return escapeHtml(text)
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      const source = String(text || '');
+      const tokenPattern = /(`[^`\n]*`|\*\*[^*\n]+\*\*|\$[\s\S]*?\$|\\\([\s\S]*?\\\))/g;
+      let output = '';
+      let cursor = 0;
+      let match;
+      while ((match = tokenPattern.exec(source)) !== null) {
+        output += escapeHtml(source.slice(cursor, match.index));
+        const token = match[0];
+        if (token.startsWith('`')) {
+          output += `<code>${escapeHtml(token.slice(1, -1))}</code>`;
+        } else if (token.startsWith('**')) {
+          output += `<strong>${formatInline(token.slice(2, -2))}</strong>`;
+        } else {
+          output += renderInlineMath(token);
+        }
+        cursor = tokenPattern.lastIndex;
+      }
+      return output + escapeHtml(source.slice(cursor));
     }
 
     function plainMathToLatex(value) {
@@ -2069,7 +2186,7 @@ APP_HTML = r"""<!doctype html>
       let match;
       while ((match = math.exec(source)) !== null) {
         output += formatInline(source.slice(cursor, match.index));
-        output += `<span class="inline-tech-math">\\(${escapeHtml(plainMathToLatex(match[0]))}\\)</span>`;
+        output += renderInlineMath(plainMathToLatex(match[0]));
         cursor = math.lastIndex;
       }
       output += formatInline(source.slice(cursor));
@@ -2112,7 +2229,26 @@ APP_HTML = r"""<!doctype html>
     }
 
     function cleanPaperEvidence(text) {
-      return String(text || '').replace(/^\s*\(\d+\)\s*/, '').trim();
+      let clean = String(text || '')
+        .replace(/[\u0000-\u001f\uE000-\uF8FF]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/^\(\d+\)\s*[•·]?\s*/, '');
+      const step = clean.search(/(?:•\s*)?Step\s+\d+\s*:/i);
+      if (step > 0) clean = clean.slice(step).replace(/^•\s*/, '');
+      const colon = clean.lastIndexOf(':');
+      if (colon > 60) {
+        const tail = clean.slice(colon + 1);
+        const noise = (tail.match(/[=∈∑]/g) || []).length;
+        if (noise >= 2) clean = `${clean.slice(0, colon).trim()}.`;
+      }
+      if (clean.length > 520) clean = `${clean.slice(0, 520).replace(/\s+\S*$/, '').replace(/[ ,;:]+$/, '')}...`;
+      return clean;
+    }
+
+    function humanizeLabel(value, fallback='Not classified') {
+      const clean = String(value || fallback).replace(/_+/g, ' ').replace(/\s+/g, ' ').trim();
+      return clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : fallback;
     }
 
     function renderImplementation(text) {
@@ -2209,14 +2345,32 @@ APP_HTML = r"""<!doctype html>
       rendered.textContent = `A reliable equation preview could not be produced${page ? ` for page ${page}` : ''}. The original notation remains visible in the paper; extraction details are available below.`;
     }
 
+    function replaceInlineMathErrors(container) {
+      container.querySelectorAll('.inline-math-source').forEach(wrapper => {
+        if (!wrapper.querySelector('[data-mml-node="merror"], mjx-merror')) return;
+        const latex = wrapper.dataset.latex || wrapper.textContent || '';
+        const fallback = document.createElement('code');
+        fallback.className = 'inline-math-fallback';
+        fallback.textContent = readableInlineMath(latex) || latex;
+        wrapper.replaceWith(fallback);
+      });
+    }
+
     function typesetMath(container, attempt=0) {
       if (window.MathJax?.typesetPromise) {
         window.MathJax.typesetPromise([container]).then(() => {
           const rendered = container.querySelector('.math-rendered');
           if (rendered?.querySelector('[data-mml-node="merror"], mjx-merror')) showMathRenderFallback(container);
+          replaceInlineMathErrors(container);
         }).catch(error => {
           console.error('MathJax failed', error);
           showMathRenderFallback(container);
+          container.querySelectorAll('.inline-math-source').forEach(wrapper => {
+            const fallback = document.createElement('code');
+            fallback.className = 'inline-math-fallback';
+            fallback.textContent = readableInlineMath(wrapper.dataset.latex || wrapper.textContent);
+            wrapper.replaceWith(fallback);
+          });
         });
       } else if (attempt < 12) {
         setTimeout(() => typesetMath(container, attempt + 1), 250);
@@ -2232,6 +2386,8 @@ APP_HTML = r"""<!doctype html>
       const paperEvidence = explanation.paper_evidence || [];
       const assumptions = explanation.assumptions_or_missing_details || [];
       const evaluation = explanation.evaluation || {};
+      const mathLoop = explanation.loop || {};
+      const loopIterations = Array.isArray(mathLoop.iterations) ? mathLoop.iterations : [];
       const dimensions = evaluation.dimensions || {};
       const dimensionLabels = {
         correctness: 'Correctness',
@@ -2258,7 +2414,7 @@ APP_HTML = r"""<!doctype html>
           ? `<div class="math-rendered" data-page="${escapeHtml(explanation.page)}">\\[${escapeHtml(displayLatex)}\\]</div>`
           : `<div class="math-render-fallback">A reliable equation preview could not be produced for page ${escapeHtml(explanation.page)}. The original notation remains visible in the paper; extraction details are available below.</div>`}
         <h4>Role</h4>
-        <p>${formatInline(explanation.role || 'Not classified.')}</p>
+        <p class="role-copy">${escapeHtml(humanizeLabel(explanation.role))}</p>
         <h4>Plain English</h4>
         <p>${formatInline(explanation.plain_english || '')}</p>
         <h4>Step by step</h4>
@@ -2266,7 +2422,7 @@ APP_HTML = r"""<!doctype html>
         <h4>Symbols</h4>
         ${symbols.length ? `
           <table class="symbol-table"><thead><tr><th>Symbol</th><th>Meaning</th><th>Basis</th></tr></thead><tbody>
-          ${symbols.map(item => `<tr><td><span class="math-symbol">\\(${escapeHtml(item.symbol)}\\)</span></td><td>${formatInline(item.meaning)}</td><td>${escapeHtml(item.source)}</td></tr>`).join('')}
+          ${symbols.map(item => `<tr><td><span class="math-symbol inline-math-source" data-latex="${escapeHtml(item.symbol)}">\\(${escapeHtml(item.symbol)}\\)</span></td><td>${formatInline(item.meaning)}</td><td><span class="symbol-source">${escapeHtml(humanizeLabel(item.source, 'Unresolved'))}</span></td></tr>`).join('')}
           </tbody></table>` : '<p class="subtle">No symbols were resolved.</p>'}
         <h4>Intuition</h4>
         <p>${formatInline(explanation.intuition || 'No intuition was produced.')}</p>
@@ -2277,7 +2433,7 @@ APP_HTML = r"""<!doctype html>
         <h4>How it fits the paper</h4>
         <p>${formatInline(explanation.context_fit || '')}</p>
         <h4>Paper evidence</h4>
-        <ul class="evidence">${paperEvidence.map(item => cleanPaperEvidence(item)).filter(Boolean).map(item => `<li>${formatInline(item)}</li>`).join('') || '<li>No supporting paper evidence was produced.</li>'}</ul>
+        <ul class="evidence paper-evidence">${paperEvidence.map(item => cleanPaperEvidence(item)).filter(Boolean).map(item => `<li>${formatTechnicalInline(item)}</li>`).join('') || '<li>No supporting paper evidence was produced.</li>'}</ul>
         ${assumptions.length ? `
           <h4>Assumptions or missing details</h4>
           <ul class="evidence">${assumptions.map(item => cleanListItem(item)).filter(Boolean).map(item => `<li>${formatInline(item)}</li>`).join('')}</ul>
@@ -2293,8 +2449,27 @@ APP_HTML = r"""<!doctype html>
           <div class="equation-card">${escapeHtml(parsed.sympy_form || parsed.normalized || 'SymPy could not parse the extracted notation.')}</div>
           ${parsed.error ? `<p class="subtle">Parser note: ${escapeHtml(parsed.error)}</p>` : ''}
         </details>
-        <h4>LLM-as-a-judge evaluation</h4>
-        <div class="judge-panel">
+        ${loopIterations.length ? `
+          <details class="trace-details">
+            <summary>Explanation loop · ${escapeHtml(String(mathLoop.initialScore ?? 0))} → ${escapeHtml(String(mathLoop.finalScore ?? 0))}/5</summary>
+            <p class="subtle">Stopped: ${escapeHtml(String(mathLoop.stopReason || 'unknown').replaceAll('_', ' '))}. ${escapeHtml(String(mathLoop.acceptedRepairs ?? 0))} repair(s) accepted from a budget of ${escapeHtml(String(mathLoop.attemptBudget ?? 0))}.</p>
+            <div class="judge-reasons">
+              ${loopIterations.map(item => `
+                <div class="judge-reason">
+                  <b>${item.iteration === 0 ? 'Initial answer' : `Repair ${escapeHtml(item.iteration)}`}:</b>
+                  ${escapeHtml(item.verdict || 'review')} · ${escapeHtml(item.score ?? 0)}/5 ·
+                  ${escapeHtml(item.action || '')}
+                  ${(item.appliedFeedback || []).length
+                    ? `<div class="subtle">Applied: ${(item.appliedFeedback || []).map(feedback => escapeHtml(feedback)).join(' ')}</div>`
+                    : ''}
+                </div>
+              `).join('')}
+            </div>
+          </details>
+        ` : ''}
+        <details class="technical-details judge-details">
+          <summary>Quality check · ${escapeHtml(verdict)} · ${escapeHtml(evaluation.overall_score ?? 0)}/5</summary>
+          <div class="judge-panel">
           <div class="judge-header">
             <div><b>${escapeHtml(evaluation.summary || 'Evaluation unavailable.')}</b><div class="subtle">${escapeHtml(evaluation.judge_model || 'No judge model')}</div></div>
             <span class="judge-verdict ${escapeHtml(verdict)}">${escapeHtml(verdict)} · ${escapeHtml(evaluation.overall_score ?? 0)}/5</span>
@@ -2306,8 +2481,9 @@ APP_HTML = r"""<!doctype html>
             <div class="judge-reason"><b>${escapeHtml(label)}:</b> ${formatInline(dimensions[key].justification || '')}</div>
           `).join('')}</div>
           ${(evaluation.issues || []).length ? `<ul class="evidence">${evaluation.issues.map(item => `<li>${formatInline(item)}</li>`).join('')}</ul>` : ''}
-          <details class="trace-details"><summary>Deterministic evaluation checks</summary><div class="equation-card">${escapeHtml(JSON.stringify(evaluation.deterministic_checks || {}, null, 2))}</div></details>
-        </div>
+            <details class="trace-details"><summary>Deterministic evaluation checks</summary><div class="equation-card">${escapeHtml(JSON.stringify(evaluation.deterministic_checks || {}, null, 2))}</div></details>
+          </div>
+        </details>
       `;
       $('closePop').onclick = () => {
         pop.classList.remove('open');
@@ -2829,6 +3005,22 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                     correction=str(payload.get("correction") or ""),
                     remember=bool(payload.get("remember")),
                 )
+                correction = str(payload.get("correction") or "")
+                score_session(
+                    paper_session_id(workspace, str(payload.get("threadId") or "")),
+                    "user_helpful",
+                    1.0 if rating == "helpful" else 0.0,
+                    data_type="BOOLEAN",
+                    comment=(
+                        correction[:500]
+                        if correction and capture_content()
+                        else f"User marked the answer {rating.replace('_', ' ')}."
+                    ),
+                    metadata={
+                        "messageId": str(payload.get("messageId") or ""),
+                        "rememberedCorrection": bool(payload.get("remember")),
+                    },
+                )
                 self._json({"ok": True, "feedback": record})
                 return
             if parsed_url.path != "/api/upload":
@@ -2856,7 +3048,10 @@ def main() -> None:
     port = DEFAULT_PORT
     server = ThreadingHTTPServer(("localhost", port), PaperReaderHandler)
     print(f"Deep Paper Reader running at http://localhost:{port}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        flush_observability()
 
 
 if __name__ == "__main__":

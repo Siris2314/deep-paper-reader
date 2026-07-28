@@ -151,6 +151,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hardware.add_argument("--json", action="store_true", help="Print the hardware report as JSON.")
 
+    gate = subparsers.add_parser(
+        "llmops-gate",
+        help="Evaluate recent Langfuse scores against release-quality thresholds.",
+    )
+    gate.add_argument(
+        "--config",
+        default="llmops/gate.json",
+        help="Quality-gate configuration JSON.",
+    )
+    gate.add_argument(
+        "--output",
+        default="llmops/reports/latest.json",
+        help="Path for the machine-readable gate report.",
+    )
+    gate.add_argument(
+        "--lookback-hours",
+        type=int,
+        default=None,
+        help="Override the configured score lookback window.",
+    )
+    gate.add_argument(
+        "--allow-insufficient-data",
+        action="store_true",
+        help="Report missing sample coverage without failing the gate.",
+    )
+
     return parser
 
 
@@ -331,6 +357,37 @@ def hardware_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def llmops_gate_command(args: argparse.Namespace) -> int:
+    from paper_agent.llmops_gate import run_langfuse_gate
+
+    try:
+        report = run_langfuse_gate(
+            args.config,
+            args.output,
+            allow_insufficient_data=args.allow_insufficient_data,
+            lookback_hours=args.lookback_hours,
+        )
+    except Exception as exc:
+        console.print(Panel.fit(f"LLMOps gate could not run:\n{exc}", border_style="red"))
+        return 2
+    color = "green" if report.passed else "red"
+    lines = [
+        f"{item.name}: {item.status} | n={item.samples} | mean={item.mean}"
+        for item in report.metrics
+    ]
+    console.print(
+        Panel.fit(
+            f"LLMOps gate: {report.status}\n"
+            f"release: {report.release or 'all'} | "
+            f"scoped={report.score_count}/{report.fetched_score_count} fetched\n"
+            + "\n".join(lines)
+            + f"\n\nReport: {Path(args.output).resolve()}",
+            border_style=color,
+        )
+    )
+    return 0 if report.passed else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = build_parser()
@@ -346,6 +403,8 @@ def main(argv: list[str] | None = None) -> int:
         return chat_command(args)
     if args.command == "hardware":
         return hardware_command(args)
+    if args.command == "llmops-gate":
+        return llmops_gate_command(args)
 
     parser.print_help()
     return 1

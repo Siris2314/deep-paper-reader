@@ -1,0 +1,37 @@
+{
+  "environment": "development",
+  "release": "current",
+  "lookbackHours": 168,
+  "metrics": {
+    "parse_succeeded": {
+      "minimumMean": 0.98,
+      "minimumSamples": 5
+    },
+    "math_overall": {
+      "minimumMean": 3.5,
+      "minimumSamples": 5
+    },
+    "math_passed": {
+      "minimumMean": 0.7,
+      "minimumSamples": 5
+    },
+    "chat_grounding_passed": {
+      "minimumMean": 0.8,
+      "minimumSamples": 5
+    },
+    "concept_enrichment_complete": {
+      "minimumMean": 0.8,
+      "minimumSamples": 5
+    },
+    "report_score": {
+      "minimumMean": 0.68,
+      "minimumSamples": 3,
+      "required": false
+    },
+    "report_passed": {
+      "minimumMean": 0.8,
+      "minimumSamples": 3,
+      "required": false
+    }
+  }
+}

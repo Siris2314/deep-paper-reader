@@ -22,7 +22,10 @@ Explain paper math from exact paper locations and parsed equation cards.
 11. When the model stage fails, produce a deterministic grounded fallback from the recovered equation and symbol table instead of a generic parser-only message. Persist the model exceptions for debugging.
 12. Cite one to three paper facts that support the interpretation and explain the equation's concrete role in the method. Reject generic roles such as `mathematical inference`.
 13. Run deterministic checks and an independent judge model across correctness, paper grounding, symbol coverage, LaTeX fidelity, and usefulness.
-14. Cache explanations under `math/explanations/` and evaluations under `math/evaluations/`.
+14. If the answer does not pass and both generation and judging are available, convert low-scoring dimensions and judge issues into targeted repair instructions. Keep the recovered equation, paper evidence, and paper-sourced symbol meanings fixed.
+15. Re-run the independent judge after each repair. Accept a replacement only when its verdict improves or its score rises by the configured minimum.
+16. Stop when the answer passes, the attempt budget is exhausted, output repeats, evaluation does not improve, generation fails, or judging is unavailable. Never run an open-ended self-critique loop.
+17. Cache explanations under `math/explanations/`, evaluations under `math/evaluations/`, and the iteration trace under `math/loops/`.
 
 ## Output Schema
 
@@ -54,4 +57,5 @@ Run `scripts/analyze_expression.py '<expression or LaTeX>'` to inspect determini
 - Do not pretend an equation proves more than it does.
 - Do not reject an equation only because PDF extraction prevents a clean SymPy parse; let the agent explain the visible raw form and report the parser limitation.
 - Do not let the judge silently rewrite the explanation; evaluation and generation must remain separate artifacts.
+- Never let a repair alter authoritative LaTeX or overwrite paper-sourced evidence with model inference.
 - Reject LaTeX containing control characters, PDF private-use glyphs, unbalanced braces, or unsafe commands before it reaches MathJax.

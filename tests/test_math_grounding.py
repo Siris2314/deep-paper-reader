@@ -1,5 +1,6 @@
 from paper_agent.math_grounding import (
     build_math_context,
+    contextual_math_evidence,
     deterministic_math_fallback,
     extract_latex_symbols,
 )
@@ -63,3 +64,85 @@ def test_grounded_fallback_remains_useful_when_model_fails():
     assert len(fallback["steps"]) == 4
     assert "difficult" in fallback["intuition"]
     assert "scalar" in fallback["dimensional_analysis"]
+
+
+def test_voting_equation_filters_environment_noise_and_resolves_symbols():
+    latex = r"V_{i,s} = \sum_{l=1}^{L} \mathbb{I}(s \in M_{i,l})"
+    page = (
+        "Step 2: Top-p Thresholding. An entry s is marked as selected by layer l. "
+        "Step 3: Cross-Layer Majority Voting. We aggregate selection hits across all L layers. "
+        "The voting score V_i,s for entry s at token step i counts how many layers selected it."
+    )
+    parsed = ParsedPaper(
+        metadata=PaperMetadata(
+            title_guess="Voting Paper", authors_guess=[], page_count=1, source_pdf="paper.pdf"
+        ),
+        full_text=page,
+        page_text={1: page},
+        sections={"method": page},
+        equation_cards=[],
+        figure_cards=[],
+        table_cards=[],
+    )
+
+    assert extract_latex_symbols(r"\begin{aligned} " + latex + r" \end{aligned}") == [
+        r"V_{i,s}",
+        r"\mathbb{I}",
+        r"M_{i,l}",
+        "L",
+    ]
+
+    bundle = build_math_context(parsed, 1, latex, "cross-layer voting")
+    meanings = {item.symbol: item for item in bundle.symbols}
+
+    assert "voting score" in meanings[r"V_{i,s}"].meaning.lower()
+    assert "indicator" in meanings[r"\mathbb{I}"].meaning.lower()
+    assert "top-p" in meanings[r"M_{i,l}"].meaning.lower()
+    assert "layers" in meanings["L"].meaning.lower()
+    assert all(len(item) <= 523 for item in bundle.evidence)
+
+
+def test_union_equation_resolves_window_and_label_set_from_paper():
+    latex = (
+        r"Y_{t}^{+} = \bigcup_{i=t}^{t+\tau-1} "
+        r"A_{i}^{\mathrm{golden}}"
+    )
+    page = (
+        "For each lookahead evaluation window, the positive ground-truth label set "
+        "Y+t is established by taking the union of denoised golden entries A golden "
+        "over the future lookahead window of tau decoding steps."
+    )
+    parsed = ParsedPaper(
+        metadata=PaperMetadata(
+            title_guess="Union Paper", authors_guess=[], page_count=1, source_pdf="paper.pdf"
+        ),
+        full_text=page,
+        page_text={1: page},
+        sections={"method": page},
+        equation_cards=[],
+        figure_cards=[],
+        table_cards=[],
+    )
+
+    bundle = build_math_context(parsed, 1, latex, "positive label set")
+    meanings = {item.symbol: item for item in bundle.symbols}
+
+    assert extract_latex_symbols(latex) == [
+        r"Y_{t}^{+}",
+        r"A_{i}^{\mathrm{golden}}",
+        r"\tau",
+    ]
+    assert "positive ground-truth" in meanings[r"Y_{t}^{+}"].meaning.lower()
+    assert "golden-entry" in meanings[r"A_{i}^{\mathrm{golden}}"].meaning.lower()
+    assert "future decoding steps" in meanings[r"\tau"].meaning.lower()
+    assert bundle.evidence
+
+
+def test_contextual_evidence_prefers_definition_sentences():
+    evidence = contextual_math_evidence(
+        "Current page 5:\nBackground text without a definition. "
+        "The positive label set is established by taking the union over the lookahead window."
+    )
+
+    assert evidence
+    assert "union" in evidence[0].lower()

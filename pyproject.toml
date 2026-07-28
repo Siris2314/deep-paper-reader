@@ -36,6 +36,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+observability = [
+    "langfuse>=4.7,<5",
+]
 dev = [
     "build>=1.2.0",
     "pytest>=8.0.0",

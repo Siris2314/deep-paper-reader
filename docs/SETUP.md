@@ -39,7 +39,7 @@ chmod +x scripts/setup.sh scripts/run_paper_reader_ui.sh
 ./scripts/setup.sh
 ```
 
-To include test, lint, and build tools, pass `-Dev` on Windows or `--dev` on macOS/Linux.
+To include test, lint, and build tools, pass `-Dev` on Windows or `--dev` on macOS/Linux. Add `-Observability` or `--observability` to install the optional Langfuse SDK.
 
 ## 3. Install local models
 
@@ -113,15 +113,38 @@ Local bibliography parsing works without this service. The API enriches metadata
 
 Ollama is the default. To use the optional OpenAI backend, create an [OpenAI API key](https://platform.openai.com/api-keys), set `MODEL_PROVIDER=openai`, and choose a compatible chat model in `.env`.
 
-### LangSmith
+### Langfuse
 
-Tracing is disabled by default. To enable it, create a key in [LangSmith](https://smith.langchain.com/settings):
+Install the observability extra:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[observability]"
+```
+
+Create a project in [Langfuse](https://cloud.langfuse.com), then add both project keys and the correct regional base URL:
 
 ```dotenv
-LANGSMITH_API_KEY=
-LANGSMITH_TRACING=true
-LANGSMITH_PROJECT=deep-paper-agent
+LANGFUSE_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://us.cloud.langfuse.com
+LANGFUSE_TRACING_ENVIRONMENT=development
+LANGFUSE_CAPTURE_CONTENT=false
 ```
+
+Each upload, concept enrichment, equation walkthrough, and paper-chat turn becomes a trace. Math-judge dimensions, chat grounding, parser success, repair attempts, and user feedback are exported as scores. With content capture disabled, prompts, answers, and paper excerpts are represented by hashes and sizes instead of raw text. Set `LANGFUSE_CAPTURE_CONTENT=true` only when the paper and user data may be sent to the configured Langfuse project.
+
+The older LangSmith environment switches remain accepted by LangChain, but do not enable both tracing backends for the same local run.
+
+After collecting traces, run the release-quality gate:
+
+```powershell
+.\.venv\Scripts\python.exe -m paper_agent.cli llmops-gate
+```
+
+Thresholds live in [`llmops/gate.json`](../llmops/gate.json), and the generated diagnosis is written to `llmops/reports/latest.json`. The strict gate fails when a metric regresses or does not yet have the configured minimum sample count. During initial trace collection, inspect coverage without blocking by adding `--allow-insufficient-data`.
+
+The `LLMOps quality gate` GitHub Actions workflow runs the same command manually. Add `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` as repository secrets. Add `LANGFUSE_BASE_URL` and `LANGFUSE_TRACING_ENVIRONMENT` as repository variables. Prompt or model promotion remains a human-approved action after the gate passes.
 
 ## 5. Run
 
@@ -160,10 +183,14 @@ The complete annotated list lives in [`.env.example`](../.env.example). The most
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_NUM_CTX` | `8192` | Active context allocation sent with local requests |
 | `PAPER_READER_MATH_MODEL` | `qwen3.5:4b` | Math explanation model |
+| `PAPER_READER_MATH_REPAIR_ATTEMPTS` | `1` | Bounded revise-and-rejudge attempts after a weak math answer |
+| `PAPER_READER_MATH_MIN_IMPROVEMENT` | `0.1` | Minimum judge-score gain required to keep a repair |
 | `PAPER_READER_AGENT_MODEL` | `qwen2.5:7b` | Concept and chat model |
 | `PAPER_READER_JUDGE_MODEL` | `qwen2.5:7b` | Independent math judge |
 | `PAPER_CHAT_MAX_PARALLEL` | `1` | Maximum concurrent local specialists |
 | `TAVILY_RESEARCH_TIMEOUT` | `90` | Tavily research timeout in seconds |
+| `LANGFUSE_ENABLED` | `false` | Enable optional Langfuse tracing when the SDK and both keys are present |
+| `LANGFUSE_CAPTURE_CONTENT` | `false` | Export full prompts and outputs instead of privacy-preserving summaries |
 
 ## Local data
 

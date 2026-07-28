@@ -19,6 +19,7 @@ from paper_agent.concepts import (
 )
 from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage
+from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
 from paper_agent.parser import ParsedPaper
 from paper_agent.term_highlighter import method_section_text
 from paper_agent.workspace import Workspace
@@ -332,7 +333,8 @@ def synthesize_why_it_matters(
                 system_prompt=system_prompt,
                 name="concept_relevance_agent",
             )
-            result = agent.invoke(
+            result = invoke_observed(
+                agent,
                 {
                     "messages": [
                         {
@@ -340,7 +342,10 @@ def synthesize_why_it_matters(
                             "content": user_prompt,
                         }
                     ]
-                }
+                },
+                name="concept-relevance-agent",
+                model=f"{provider}:{model_name}",
+                metadata={"term": term},
             )
             messages = result.get("messages", []) if isinstance(result, dict) else []
             answer = _message_text(messages[-1]) if messages else _message_text(result)
@@ -354,7 +359,7 @@ def synthesize_why_it_matters(
     raise RuntimeError("; ".join(failures) or "No paper-agent model was available.")
 
 
-def enrich_concept_card(
+def _enrich_concept_card_impl(
     parsed: ParsedPaper,
     workspace: Workspace,
     term: str,
@@ -410,3 +415,42 @@ def enrich_concept_card(
     if progress:
         progress("saving", "Saving the enriched concept card.")
     return card
+
+
+def enrich_concept_card(
+    parsed: ParsedPaper,
+    workspace: Workspace,
+    term: str,
+    progress: Callable[[str, str], None] | None = None,
+) -> ConceptCard:
+    with workflow_trace(
+        "concept-enrichment",
+        input_data={"term": term, "paper": parsed.metadata.title_guess},
+        session_id=paper_session_id(workspace),
+        tags=["concept", "paper-reader", "tavily"],
+        metadata={"termSlug": slugify(term)},
+    ) as trace:
+        card = _enrich_concept_card_impl(parsed, workspace, term, progress)
+        succeeded = card.status == "enriched"
+        trace.update(
+            output=asdict(card),
+            metadata={
+                "status": card.status,
+                "webSourceCount": len(card.web_sources),
+                "generalExplanationModel": card.general_explanation_model,
+                "whyItMattersModel": card.why_it_matters_model,
+            },
+            level="DEFAULT" if succeeded else "WARNING",
+        )
+        trace.score(
+            "concept_enrichment_complete",
+            1.0 if succeeded else 0.0,
+            data_type="BOOLEAN",
+        )
+        trace.score("concept_web_sources", float(len(card.web_sources)))
+        trace.score(
+            "concept_paper_agent_succeeded",
+            1.0 if card.why_it_matters_source == "paper_agent" else 0.0,
+            data_type="BOOLEAN",
+        )
+        return card

@@ -84,11 +84,13 @@ Setup creates `.env` from [`.env.example`](.env.example). Local parsing and dete
 | `TAVILY_API_KEY` | No | On-demand concept research and web chat | [Tavily](https://app.tavily.com/home) |
 | `SEMANTIC_SCHOLAR_API_KEY` | No | Canonical metadata for locally found citation relationships | [Semantic Scholar API](https://www.semanticscholar.org/product/api) |
 | `OPENAI_API_KEY` | No | Optional OpenAI model backend | [OpenAI API keys](https://platform.openai.com/api-keys) |
-| `LANGSMITH_API_KEY` | No | Optional LangGraph/LangChain tracing | [LangSmith settings](https://smith.langchain.com/settings) |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | No | Optional traces, evaluation scores, sessions, and user feedback | [Langfuse](https://cloud.langfuse.com) |
 
-Tavily is lazy: it is called when a user opens a highlighted concept or selects a web-enabled chat mode. Uploaded PDFs, parsed pages, model prompts, and local memory stay on the machine when Ollama is used, except for the exact evidence sent to explicitly enabled external services.
+Tavily is lazy: it is called when a user opens a highlighted concept or selects a web-enabled chat mode. Uploaded PDFs, parsed pages, model prompts, and local memory stay on the machine when Ollama is used, except for the exact evidence sent to explicitly enabled external services. Langfuse content capture is disabled by default; observability exports hashes, sizes, timing, models, errors, and evaluation scores unless explicitly configured otherwise.
 
 See [Setup and configuration](docs/SETUP.md) for model profiles, platform-specific steps, environment variables, verification, and troubleshooting.
+
+When Langfuse is enabled, run `python -m paper_agent.cli llmops-gate` to check parser, math, concept, and chat scores for the current release against [the committed release thresholds](llmops/gate.json). Scores from older releases remain available in Langfuse but do not affect this gate. Leave `PAPER_READER_RELEASE` blank for an automatic local source fingerprint, or set it to a version or commit SHA for a deployed release. The same gate is available as a manually triggered GitHub Actions workflow.
 
 ## Using the reader
 

@@ -6,6 +6,7 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from langgraph.graph import END, START, StateGraph
 from paper_agent.agents import build_direct_chat_model
 from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage
+from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
 from paper_agent.parser import ParsedPaper, clean_line, detect_section_heading
 from paper_agent.research_lineage import build_research_lineage
 from paper_agent.schemas import BaseModel
@@ -664,7 +666,19 @@ Do not cite an ID that is absent from the packet. Do not wrap the JSON in prose.
         metadata={"question": question[:240], "skill": skill_name},
     )
     model = build_direct_chat_model(config)
-    raw = str(getattr(model.invoke(prompt), "content", "")).strip()
+    raw = str(
+        getattr(
+            invoke_observed(
+                model,
+                prompt,
+                name=f"paper-chat-{specialist}-specialist",
+                model=f"{config.model_provider}:{config.model}",
+                metadata={"specialist": specialist, "skill": skill_name},
+            ),
+            "content",
+            "",
+        )
+    ).strip()
     payload = _extract_json(raw)
     valid_ids = {item.id for item in evidence}
     if payload:
@@ -736,7 +750,19 @@ Return JSON with fields answer, cited_evidence_ids, claims, and uncertainties. D
         reserved_output_tokens=int(os.getenv("PAPER_CHAT_MAX_TOKENS", "1400")),
         metadata={"question": question[:240], "specialists": [item.specialist for item in outputs]},
     )
-    raw = str(getattr(build_direct_chat_model(config).invoke(prompt), "content", "")).strip()
+    raw = str(
+        getattr(
+            invoke_observed(
+                build_direct_chat_model(config),
+                prompt,
+                name="paper-chat-synthesis",
+                model=f"{config.model_provider}:{config.model}",
+                metadata={"specialists": [item.specialist for item in outputs]},
+            ),
+            "content",
+            "",
+        )
+    ).strip()
     payload = _extract_json(raw) or {}
     return SpecialistOutput(
         specialist="synthesis",
@@ -893,7 +919,10 @@ class PaperChatWorkflow:
             with ThreadPoolExecutor(
                 max_workers=worker_count, thread_name_prefix="paper-chat"
             ) as pool:
-                future_map = {pool.submit(invoke, name): name for name in route.specialists}
+                future_map = {
+                    pool.submit(copy_context().run, invoke, name): name
+                    for name in route.specialists
+                }
                 for future in as_completed(future_map):
                     outputs.append(future.result())
             outputs.sort(key=lambda item: route.specialists.index(item.specialist))
@@ -989,7 +1018,7 @@ class PaperChatWorkflow:
         return graph.compile()
 
 
-def run_paper_chat(
+def _run_paper_chat_impl(
     parsed: ParsedPaper,
     workspace: Workspace,
     question: str,
@@ -1037,8 +1066,64 @@ def run_paper_chat(
             "paperEvidenceItems": sum(1 for item in evidence if item.source == "paper"),
             "webEvidenceItems": sum(1 for item in evidence if item.source == "web"),
             "specialists": route.specialists,
+            "repairAttempts": int(final.get("repair_attempts", 0)),
         },
     )
     save_chat_turn(workspace, safe_id, clean_question, result)
     _progress(progress, "complete", "Paper chat answer is ready.")
     return result
+
+
+def run_paper_chat(
+    parsed: ParsedPaper,
+    workspace: Workspace,
+    question: str,
+    *,
+    mode: ChatMode = "fast",
+    thread_id: str | None = None,
+    progress: ProgressCallback | None = None,
+) -> PaperChatResult:
+    session_thread = _safe_thread_id(thread_id)
+    with workflow_trace(
+        "paper-chat-turn",
+        input_data={"question": question, "mode": mode, "threadId": session_thread},
+        session_id=paper_session_id(workspace, session_thread),
+        tags=["chat", "paper-reader", mode],
+        metadata={"mode": mode, "threadId": session_thread},
+    ) as trace:
+        result = _run_paper_chat_impl(
+            parsed,
+            workspace,
+            question,
+            mode=mode,
+            thread_id=session_thread,
+            progress=progress,
+        )
+        trace.update(
+            output=result.model_dump(),
+            metadata={
+                "mode": mode,
+                "specialists": result.route.specialists,
+                "citationCount": len(result.citations),
+                "repairAttempts": result.context.get("repairAttempts", 0),
+            },
+            level="DEFAULT" if result.verification.passed else "WARNING",
+        )
+        trace.score(
+            "chat_grounding_passed",
+            1.0 if result.verification.passed else 0.0,
+            data_type="BOOLEAN",
+            comment="; ".join(result.verification.issues),
+        )
+        trace.score("chat_citations", float(len(result.citations)))
+        trace.score(
+            "chat_repair_attempts",
+            float(result.context.get("repairAttempts", 0) or 0),
+        )
+        for name, passed in result.verification.checks.items():
+            trace.score(
+                f"chat_{name}",
+                1.0 if passed else 0.0,
+                data_type="BOOLEAN",
+            )
+        return result

@@ -19,6 +19,7 @@ build/
 *.egg-info/
 .DS_Store
 uploaded_papers/
+llmops/reports/
 examples/*.pdf
 *.log
 Thumbs.db
