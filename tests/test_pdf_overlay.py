@@ -1,3 +1,5 @@
+import fitz
+
 from paper_agent.math_regions import _geometry_latex
 from paper_agent.parser import parse_paper
 from paper_agent.term_highlighter import SignificantTerm
@@ -22,6 +24,42 @@ def test_pdf_layout_uses_original_page_coordinates(tmp_path, sample_pdf):
     assert layout["height"] > 0
     assert layout["words"]
     assert any(mark["term"] == "model" for mark in layout["highlights"])
+
+
+def test_pdf_layout_does_not_annotate_vertical_arxiv_margin_text(tmp_path):
+    pdf = tmp_path / "margin-metadata.pdf"
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    page.insert_text((18, 500), "arXiv:2305.18290v3", fontsize=10, rotate=90)
+    page.insert_text((72, 120), "A reward model scores candidate responses.", fontsize=11)
+    document.save(pdf)
+    document.close()
+    parsed = parse_paper(pdf, tmp_path / "report")
+    terms = [
+        SignificantTerm(
+            term="arXiv",
+            category="concept",
+            score=10,
+            paper_occurrences=1,
+            method_occurrences=0,
+            evidence=[],
+            skills=["paper-term-highlighter"],
+        ),
+        SignificantTerm(
+            term="reward model",
+            category="concept",
+            score=10,
+            paper_occurrences=1,
+            method_occurrences=0,
+            evidence=[],
+            skills=["paper-term-highlighter"],
+        ),
+    ]
+
+    layout = page_layout_payload(parsed, terms, 1)
+
+    assert not any(mark["term"] == "arXiv" for mark in layout["highlights"])
+    assert any(mark["term"] == "reward model" for mark in layout["highlights"])
 
 
 def test_pdf_layout_exposes_hoverable_math_regions(tmp_path, sample_pdf):

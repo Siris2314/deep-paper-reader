@@ -1,6 +1,6 @@
 # Contributing
 
-Deep Paper Reader is an early-stage research tool. Keep changes narrow, evidence-aware, and testable.
+Keep changes narrow, evidence-aware, and testable.
 
 ## Development setup
 
@@ -50,3 +50,6 @@ Keep pull requests focused. Include:
 - new environment variables or external network calls
 
 Do not include uploaded papers, generated reports, `.env`, API keys, local model files, or long-term user memory.
+
+Update the README in the same pull request when a change affects the reading workflow, setup
+commands, default models, external services, environment variables, or other user-visible behavior.

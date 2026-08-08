@@ -23,6 +23,10 @@ class SignificantTerm:
     learned: bool = False
     correction_count: int = 0
     vocabulary_source: str = "paper_local"
+    extraction_version: int = 2
+
+
+EXTRACTION_VERSION = 2
 
 
 STOP_TERMS = {
@@ -40,6 +44,84 @@ STOP_TERMS = {
     "table",
 }
 
+# Paper metadata and broad singleton words are poor automatic annotations. User memory can still
+# promote a broad singleton such as "model", while metadata remains excluded.
+METADATA_TERMS = {
+    "arxiv",
+    "bibliography",
+    "copyright",
+    "doi",
+    "preprint",
+    "submitted",
+}
+GENERIC_SINGLETONS = {
+    "algorithm",
+    "data",
+    "learning",
+    "method",
+    "model",
+    "models",
+    "result",
+    "system",
+    "task",
+    "training",
+}
+
+# These are grammatical heads used to find phrases authored by the paper, not a catalog of
+# ML concepts. For example, they let the paper contribute "large unsupervised language models"
+# as one span instead of highlighting only "model".
+RESEARCH_PHRASE_HEADS = {
+    "agent",
+    "agents",
+    "algorithm",
+    "algorithms",
+    "architecture",
+    "architectures",
+    "assistant",
+    "assistants",
+    "attention",
+    "benchmark",
+    "benchmarks",
+    "cache",
+    "classifier",
+    "classifiers",
+    "corpus",
+    "dataset",
+    "datasets",
+    "decoder",
+    "decoders",
+    "distribution",
+    "distributions",
+    "embedding",
+    "embeddings",
+    "encoder",
+    "encoders",
+    "evaluation",
+    "feedback",
+    "framework",
+    "frameworks",
+    "inference",
+    "learning",
+    "loss",
+    "losses",
+    "metric",
+    "metrics",
+    "model",
+    "models",
+    "objective",
+    "objectives",
+    "optimization",
+    "policy",
+    "policies",
+    "preference",
+    "preferences",
+    "representation",
+    "representations",
+    "retrieval",
+    "reward",
+    "sampling",
+    "training",
+}
 # These signals classify discovered terms; they are not a candidate vocabulary.
 MATH_SIGNALS = (
     "loss",
@@ -70,6 +152,70 @@ LOCAL_STOP_WORDS = STOP_TERMS | {
     "where",
     "which",
     "with",
+}
+PHRASE_BOUNDARIES = LOCAL_STOP_WORDS | {
+    "a",
+    "all",
+    "although",
+    "an",
+    "and",
+    "any",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "but",
+    "by",
+    "can",
+    "called",
+    "corresponding",
+    "could",
+    "either",
+    "do",
+    "does",
+    "during",
+    "each",
+    "every",
+    "for",
+    "has",
+    "have",
+    "its",
+    "in",
+    "is",
+    "it",
+    "many",
+    "may",
+    "most",
+    "more",
+    "new",
+    "no",
+    "of",
+    "on",
+    "one",
+    "or",
+    "other",
+    "our",
+    "several",
+    "same",
+    "some",
+    "than",
+    "the",
+    "those",
+    "three",
+    "to",
+    "two",
+    "unknown",
+    "use",
+    "used",
+    "uses",
+    "we",
+    "were",
+    "will",
+    "while",
+    "would",
+    "whose",
+    "your",
 }
 
 
@@ -126,23 +272,109 @@ def _sentence_evidence(text: str, term: str, limit: int = 3) -> list[str]:
     return hits
 
 
+def _research_text(parsed: ParsedPaper) -> str:
+    sections: list[str] = []
+    for name, section_text in parsed.sections.items():
+        low_name = name.casefold()
+        if "references" in low_name or "bibliography" in low_name:
+            break
+        if "appendix" not in low_name and "supplement" not in low_name:
+            sections.append(section_text)
+    text = "\n".join(sections).strip() or parsed.full_text
+    clean_lines: list[str] = []
+    metadata_line = re.compile(
+        r"(?:\barxiv\s*:|\bdoi\s*:|https?://arxiv\.org|^\s*---\s*page\s+\d+\s*---\s*$)",
+        re.I,
+    )
+    for line in text.splitlines():
+        if metadata_line.search(line):
+            continue
+        clean_lines.append(line)
+    return "\n".join(clean_lines)
+
+
+def _candidate_is_noise(term: str) -> bool:
+    low = term.casefold().strip()
+    if (
+        not low
+        or low in PHRASE_BOUNDARIES
+        or low in METADATA_TERMS
+    ):
+        return True
+    if re.search(r"\barxiv\b|\bdoi\b|\bcs\.[a-z]{2}\b", low):
+        return True
+    if re.fullmatch(r"(?:19|20)\d{2}", low) or re.fullmatch(r"\d+(?:\.\d+){1,3}v?\d*", low):
+        return True
+    return False
+
+
+def _clean_candidate(term: str) -> str:
+    term = re.sub(r"\s+", " ", term).strip(" -_:;,.()[]{}")
+    term = re.sub(r"^(?:an?|the|our|their|this|these)\s+", "", term, flags=re.I)
+    return term.strip(" -_:;,.()[]{}")
+
+
+def _paper_phrase_candidates(text: str) -> list[str]:
+    phrases: list[str] = []
+    token_rx = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*")
+    for sentence in re.split(r"(?<=[.!?;:])\s+|\n+", text):
+        tokens = token_rx.findall(sentence)
+        for index, token in enumerate(tokens):
+            if token.casefold() not in RESEARCH_PHRASE_HEADS:
+                continue
+            left = index
+            while left > 0 and index - left < 4:
+                previous = tokens[left - 1].casefold()
+                if previous in PHRASE_BOUNDARIES:
+                    break
+                left -= 1
+            window = tokens[left : index + 1]
+            for size in range(2, min(5, len(window)) + 1):
+                phrase = _clean_candidate(" ".join(window[-size:]))
+                if 5 <= len(phrase) <= 90:
+                    phrases.append(phrase)
+    return phrases
+
+
+def _acronym_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    pattern = re.compile(
+        r"\b([A-Za-z][A-Za-z-]*(?:\s+(?:from|of|for|with|and|[A-Za-z][A-Za-z-]*)){1,7})"
+        r"\s*\(([A-Z][A-Z0-9-]{1,14})\)"
+    )
+    for match in pattern.finditer(text):
+        long_form = _clean_candidate(match.group(1))
+        acronym = match.group(2)
+        initials = "".join(
+            word[0]
+            for word in re.findall(r"[A-Za-z]+", long_form)
+            if word.casefold() not in {"and", "for", "from", "of", "the", "with"}
+        ).upper()
+        if len(long_form.split()) >= 2 and (
+            initials == acronym or initials.endswith(acronym) or acronym.endswith(initials)
+        ):
+            candidates.extend((long_form, acronym))
+    return candidates
+
+
 def _candidate_terms(
     parsed: ParsedPaper,
     learned_terms: dict[str, dict[str, object]] | None = None,
     vocabulary: list[VocabularyTerm] | None = None,
-) -> tuple[list[str], set[str]]:
-    text = parsed.full_text
-    candidates: list[str] = []
+) -> tuple[list[str], dict[str, str]]:
+    text = _research_text(parsed)
+    candidates: list[tuple[str, str]] = []
     if learned_terms:
         candidates.extend(
-            str(item.get("term")) for item in learned_terms.values() if item.get("term")
+            (str(item.get("term")), "user_memory")
+            for item in learned_terms.values()
+            if item.get("term")
         )
 
     archive_hits = terms_present_in_text(
         text, vocabulary if vocabulary is not None else load_method_vocabulary()
     )
-    candidates.extend(item.term for item in archive_hits)
-    archive_keys = {item.term.casefold() for item in archive_hits}
+    candidates.extend((item.term, "papers_with_code_archive") for item in archive_hits)
 
     # Extract paper-authored names and acronyms so newly published methods need not exist in the archive.
     introduced_rx = re.compile(
@@ -156,7 +388,10 @@ def _candidate_terms(
         )[0]
         phrase = re.sub(r"\s+", " ", phrase).strip(" -_:;,.()")
         if 3 <= len(phrase) <= 80:
-            candidates.append(phrase)
+            candidates.append((phrase, "paper_introduced"))
+
+    candidates.extend((term, "paper_acronym") for term in _acronym_candidates(text))
+    candidates.extend((term, "paper_phrase") for term in _paper_phrase_candidates(text))
 
     phrase_rx = re.compile(
         r"\b(?:[A-Z][A-Za-z0-9]+|[A-Z]{2,})(?:[- ][A-Z][A-Za-z0-9]+){0,4}\b|\b[A-Z]{3,12}\b"
@@ -170,23 +405,52 @@ def _candidate_terms(
             continue
         is_acronym = bool(re.fullmatch(r"[A-Z][A-Z0-9-]{2,14}", term))
         is_camel_case_name = bool(re.search(r"[a-z][A-Z]", term))
+        has_research_head = any(
+            token.casefold() in RESEARCH_PHRASE_HEADS
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9-]*", term)
+        )
         if (
             not is_acronym
             and not is_camel_case_name
-            and (" " not in term or _count_term(text, term) < 2)
+            and (" " not in term or _count_term(text, term) < 2 or not has_research_head)
         ):
             continue
-        candidates.append(term)
+        candidates.append((term, "paper_local"))
 
     seen: set[str] = set()
     out: list[str] = []
-    for term in candidates:
-        key = term.lower()
+    sources: dict[str, str] = {}
+    source_priority = {
+        "paper_local": 0,
+        "paper_phrase": 1,
+        "paper_acronym": 2,
+        "paper_introduced": 3,
+        "papers_with_code_archive": 4,
+        "user_memory": 5,
+    }
+    for raw_term, source in candidates:
+        term = _clean_candidate(raw_term)
+        key = term.casefold()
+        if _candidate_is_noise(term):
+            continue
+        if source != "user_memory" and " " not in term and key in GENERIC_SINGLETONS:
+            continue
+        if (
+            source == "papers_with_code_archive"
+            and " " not in term
+            and not re.fullmatch(r"[A-Z][A-Z0-9-]{2,14}", term)
+            and not re.search(r"[a-z][A-Z]", term)
+            and _count_term(text, term) < 2
+        ):
+            continue
         if key in seen:
+            if source_priority[source] > source_priority[sources[key]]:
+                sources[key] = source
             continue
         seen.add(key)
         out.append(term)
-    return out, archive_keys
+        sources[key] = source
+    return out, sources
 
 
 def term_pattern(term: str) -> str:
@@ -200,15 +464,53 @@ def _count_term(text: str, term: str) -> int:
     return len(re.findall(term_pattern(term), text, flags=re.I))
 
 
+def _prune_duplicate_phrase_spans(terms: list[SignificantTerm]) -> list[SignificantTerm]:
+    selected: list[SignificantTerm] = []
+    phrase_terms = sorted(
+        terms,
+        key=lambda item: (item.learned, len(item.term.split()), item.score),
+        reverse=True,
+    )
+    for item in phrase_terms:
+        item_tokens = re.findall(r"[a-z0-9]+", item.term.casefold())
+        redundant = False
+        if item.vocabulary_source == "paper_phrase" and not item.learned:
+            for existing in selected:
+                if (
+                    existing.vocabulary_source != "paper_phrase"
+                    or existing.paper_occurrences != item.paper_occurrences
+                    or existing.method_occurrences != item.method_occurrences
+                ):
+                    continue
+                existing_tokens = re.findall(r"[a-z0-9]+", existing.term.casefold())
+                for start in range(len(existing_tokens) - len(item_tokens) + 1):
+                    if existing_tokens[start : start + len(item_tokens)] == item_tokens:
+                        redundant = True
+                        break
+                if redundant:
+                    break
+        if not redundant:
+            selected.append(item)
+    return selected
+
+
 def extract_significant_terms(
     parsed: ParsedPaper,
-    max_terms: int = 80,
+    max_terms: int = 160,
     learned_terms: dict[str, dict[str, object]] | None = None,
     vocabulary: list[VocabularyTerm] | None = None,
 ) -> list[SignificantTerm]:
     learned_terms = learned_terms if learned_terms is not None else load_learned_terms()
-    full = parsed.full_text
+    full = _research_text(parsed)
     method_text = method_section_text(parsed)
+    focus_text = "\n".join(
+        section_text
+        for name, section_text in parsed.sections.items()
+        if any(
+            label in name.casefold()
+            for label in ("abstract", "approach", "introduction", "method")
+        )
+    )
     equation_text = "\n".join(card.raw for card in parsed.equation_cards)
     visual_text = "\n".join(
         [
@@ -217,23 +519,31 @@ def extract_significant_terms(
         ]
     )
     terms: list[SignificantTerm] = []
-    candidates, archive_keys = _candidate_terms(parsed, learned_terms, vocabulary)
+    candidates, candidate_sources = _candidate_terms(parsed, learned_terms, vocabulary)
     for term in candidates:
         paper_count = _count_term(full, term)
         if paper_count == 0:
             continue
         method_count = _count_term(method_text, term)
+        focus_count = _count_term(focus_text, term)
         equation_count = _count_term(equation_text, term)
         visual_count = _count_term(visual_text, term)
         learned_record = learned_terms.get(term.lower())
-        from_pwc = term.casefold() in archive_keys
+        source = candidate_sources[term.casefold()]
+        from_pwc = source == "papers_with_code_archive"
         category = (
             str(learned_record.get("category"))
             if learned_record
             else _category_for(term, from_pwc=from_pwc)
         )
         correction_count = int(learned_record.get("correction_count", 0)) if learned_record else 0
-        base = paper_count + 2.5 * method_count + 2.0 * equation_count + 1.5 * visual_count
+        base = (
+            paper_count
+            + 2.5 * method_count
+            + 1.5 * focus_count
+            + 2.0 * equation_count
+            + 1.5 * visual_count
+        )
         if category == "math":
             base += 3
         elif category == "method":
@@ -242,6 +552,12 @@ def extract_significant_terms(
             base += 1.5
         if from_pwc:
             base += 5
+        if source == "paper_introduced":
+            base += 4
+        elif source == "paper_acronym":
+            base += 3
+        elif source == "paper_phrase":
+            base += 2 + min(len(term.split()) - 1, 4) * 1.75
         if learned_record:
             # A direct user correction outranks heuristic extraction on every future paper.
             base += 14 + min(correction_count, 10)
@@ -259,13 +575,11 @@ def extract_significant_terms(
                 skills=_skills_for(category),
                 learned=bool(learned_record),
                 correction_count=correction_count,
-                vocabulary_source="user_memory"
-                if learned_record
-                else "papers_with_code_archive"
-                if from_pwc
-                else "paper_local",
+                vocabulary_source=source,
+                extraction_version=EXTRACTION_VERSION,
             )
         )
+    terms = _prune_duplicate_phrase_spans(terms)
     terms.sort(
         key=lambda item: (item.score, item.method_occurrences, item.paper_occurrences), reverse=True
     )
@@ -273,7 +587,7 @@ def extract_significant_terms(
 
 
 def save_significant_terms(
-    parsed: ParsedPaper, workspace: Workspace, max_terms: int = 80
+    parsed: ParsedPaper, workspace: Workspace, max_terms: int = 160
 ) -> list[SignificantTerm]:
     terms = extract_significant_terms(parsed, max_terms=max_terms)
     workspace.write_json("memory/significant_terms.json", [asdict(term) for term in terms])
@@ -281,7 +595,7 @@ def save_significant_terms(
 
 
 def load_significant_terms(
-    parsed: ParsedPaper, workspace: Workspace, max_terms: int = 80
+    parsed: ParsedPaper, workspace: Workspace, max_terms: int = 160
 ) -> list[SignificantTerm]:
     path = workspace.path("memory/significant_terms.json")
     global_memory = term_memory_path()
@@ -291,7 +605,14 @@ def load_significant_terms(
         return save_significant_terms(parsed, workspace, max_terms=max_terms)
     try:
         payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-        if any(isinstance(item, dict) and "vocabulary_source" not in item for item in payload):
+        if any(
+            isinstance(item, dict)
+            and (
+                "vocabulary_source" not in item
+                or item.get("extraction_version") != EXTRACTION_VERSION
+            )
+            for item in payload
+        ):
             return save_significant_terms(parsed, workspace, max_terms=max_terms)
         return [SignificantTerm(**item) for item in payload[:max_terms] if isinstance(item, dict)]
     except Exception:

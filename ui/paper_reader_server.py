@@ -469,6 +469,21 @@ def _tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
+def _automatic_margin_annotation(
+    matched_words: list[dict[str, object]], page_width: float, page_height: float
+) -> bool:
+    if not matched_words:
+        return False
+    x0 = min(float(word["x"]) for word in matched_words)
+    y0 = min(float(word["y"]) for word in matched_words)
+    x1 = max(float(word["x"]) + float(word["width"]) for word in matched_words)
+    y1 = max(float(word["y"]) + float(word["height"]) for word in matched_words)
+    side_margin = x1 <= page_width * 0.10 or x0 >= page_width * 0.90
+    edge_header = y1 <= page_height * 0.025 or y0 >= page_height * 0.975
+    vertical_text = (y1 - y0) > max((x1 - x0) * 1.8, 20.0)
+    return edge_header or (side_margin and vertical_text)
+
+
 def page_layout_payload(
     parsed: ParsedPaper, terms: list[SignificantTerm], page_number: int
 ) -> dict[str, object]:
@@ -517,6 +532,11 @@ def page_layout_payload(
                 dict.fromkeys(index for _, index in stream[start : start + len(wanted)])
             )
             if any(index in claimed_words for index in word_ids):
+                continue
+            matched_words = [words[index] for index in word_ids]
+            if not term.learned and _automatic_margin_annotation(
+                matched_words, page_width, page_height
+            ):
                 continue
             claimed_words.update(word_ids)
             grouped: dict[tuple[int, int], list[dict[str, object]]] = {}
@@ -592,7 +612,7 @@ def remember_highlight(
             "description": "User-confirmed terms for this paper. Shared learning lives in agent_memory/term_highlights.json.",
             "terms": [
                 asdict(term_item)
-                for term_item in save_significant_terms(parsed, workspace, max_terms=120)
+                for term_item in save_significant_terms(parsed, workspace, max_terms=160)
                 if term_item.learned
             ],
         },
