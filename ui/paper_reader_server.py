@@ -2466,6 +2466,9 @@ APP_HTML = r"""<!doctype html>
       const steps = explanation.steps || [];
       const paperEvidence = explanation.paper_evidence || [];
       const assumptions = explanation.assumptions_or_missing_details || [];
+      const derivationNotes = explanation.derivation_notes || '';
+      const toyExample = explanation.toy_example || '';
+      const transcriptionWarnings = explanation.transcription_warnings || [];
       const evaluation = explanation.evaluation || {};
       const mathLoop = explanation.loop || {};
       const loopIterations = Array.isArray(mathLoop.iterations) ? mathLoop.iterations : [];
@@ -2511,6 +2514,10 @@ APP_HTML = r"""<!doctype html>
         <p>${formatTechnicalInline(explanation.dimensional_analysis || 'Dimensions were not resolved.')}</p>
         <h4>Implementation view</h4>
         <div class="implementation-view">${renderImplementation(explanation.implementation_view)}</div>
+        <h4>Derivation notes</h4>
+        <p>${formatTechnicalInline(derivationNotes || 'The paper does not provide a derivation for this equation.')}</p>
+        <h4>Toy example</h4>
+        <p>${formatTechnicalInline(toyExample || 'No faithful toy example was produced.')}</p>
         <h4>How it fits the paper</h4>
         <p>${formatInline(explanation.context_fit || '')}</p>
         <h4>Paper evidence</h4>
@@ -2521,7 +2528,8 @@ APP_HTML = r"""<!doctype html>
         ` : ''}
         <details class="technical-details">
           <summary>Technical details</summary>
-          <div class="subtle">${escapeHtml(explanation.model)} · ${escapeHtml(explanation.status)} · ${escapeHtml(parsed.status || 'unparsed')} · LaTeX: ${escapeHtml(explanation.latex_source || 'unavailable')}</div>
+          <div class="subtle">${escapeHtml(explanation.model)} · ${escapeHtml(explanation.status)} · confidence: ${escapeHtml(explanation.explanation_confidence || 'low')} · ${escapeHtml(parsed.status || 'unparsed')} · LaTeX: ${escapeHtml(explanation.latex_source || 'unavailable')} (${escapeHtml(String(Math.round((Number(explanation.transcription_confidence) || 0) * 100)))}%)</div>
+          ${transcriptionWarnings.length ? `<h4>Transcription warnings</h4><ul class="evidence">${transcriptionWarnings.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
           <h4>Nearby paper text</h4>
           <p>${formatInline(explanation.paper_context || 'No nearby explanation was extracted.')}</p>
           <h4>Extracted PDF text</h4>

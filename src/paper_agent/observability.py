@@ -492,4 +492,3 @@ def invoke_observed(
     except Exception:
         pass
     return result
-

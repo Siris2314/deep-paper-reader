@@ -6,12 +6,14 @@ from paper_agent.paper_chat import (
     ChatEvidence,
     RouteDecision,
     SpecialistOutput,
+    _paper_chat_model,
     decide_chat_route,
     load_chat_thread,
     retrieve_paper_evidence,
     run_paper_chat,
     verify_chat_answer,
 )
+from paper_agent.config import RunConfig
 from paper_agent.parser import ParsedPaper
 from paper_agent.schemas import EquationCard, FigureCard, PaperMetadata, TableCard
 from paper_agent.workspace import Workspace
@@ -87,6 +89,31 @@ def test_verifier_rejects_unresolved_citations():
     assert result.passed is False
     assert result.checks["citations_resolve"] is False
     assert result.checks["paper_grounded"] is False
+
+
+def test_paper_chat_model_enforces_generation_budget_and_keep_alive(tmp_path, monkeypatch):
+    updates = {}
+
+    class FakeModel:
+        def model_copy(self, *, update):
+            updates.update(update)
+            return self
+
+    monkeypatch.setattr(
+        "paper_agent.paper_chat.build_direct_chat_model", lambda config: FakeModel()
+    )
+    monkeypatch.setenv("PAPER_CHAT_MAX_TOKENS", "5000")
+    monkeypatch.setenv("PAPER_READER_AGENT_KEEP_ALIVE", "20m")
+    config = RunConfig(
+        pdf_path=tmp_path / "paper.pdf",
+        output_dir=tmp_path / "workspace",
+        model_provider="ollama",
+        model="test-model",
+    )
+
+    _paper_chat_model(config)
+
+    assert updates == {"keep_alive": "20m", "num_predict": 1600}
 
 
 def test_graph_persists_a_chat_turn_without_external_models(tmp_path, monkeypatch):

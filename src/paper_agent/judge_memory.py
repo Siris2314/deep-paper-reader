@@ -136,9 +136,7 @@ def record_math_judge_feedback(
     clean_feedback = re.sub(r"\s+", " ", feedback).strip()[:4000]
     now = datetime.now(timezone.utc).isoformat()
     evaluation = (
-        explanation.get("evaluation")
-        if isinstance(explanation.get("evaluation"), dict)
-        else {}
+        explanation.get("evaluation") if isinstance(explanation.get("evaluation"), dict) else {}
     )
     record = {
         "id": uuid.uuid4().hex,
@@ -176,9 +174,7 @@ def record_math_judge_feedback(
         memory["episodes"] = episodes[-300:]
 
         if rating == "disagree" and clean_feedback:
-            semantic = [
-                item for item in memory.get("semantic", []) if isinstance(item, dict)
-            ]
+            semantic = [item for item in memory.get("semantic", []) if isinstance(item, dict)]
             normalized = clean_feedback.casefold()
             existing = next(
                 (

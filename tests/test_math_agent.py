@@ -3,8 +3,10 @@ from types import SimpleNamespace
 
 from paper_agent.math_agent import (
     _clean_generated_list,
+    _compact_repair_payload,
     _repair_generated_math_text,
     _required_feedback_resolved,
+    _select_transcription,
     _specific_role,
     analyze_expression,
     explain_equation,
@@ -28,6 +30,8 @@ def math_payload(plain_english: str) -> dict[str, object]:
         "intuition": "The score combines both terms.",
         "dimensional_analysis": "The squared input and target must be add-compatible.",
         "implementation_view": "s = x*x + y",
+        "derivation_notes": "The equation is a direct definition; no additional derivation is shown.",
+        "toy_example": "For x = 2 and y = 1, the score is 5.",
         "paper_evidence": ["The paper defines x as input and y as target."],
         "context_fit": "This equation defines the score used by the method.",
         "assumptions_or_missing_details": [],
@@ -89,6 +93,48 @@ def test_sympy_parses_latex_when_available():
 
     assert parsed.status == "parsed_latex"
     assert parsed.free_symbols == ["x"]
+
+
+def test_display_transcription_prefers_validated_vision_over_unverified_sympy():
+    selection = _select_transcription(
+        parsed_latex=r"p = \exp(a + \exp(b))",
+        geometry_latex="",
+        vision_latex=r"p = \frac{\exp(a)}{\exp(a) + \exp(b)}",
+        raw="lossy flattened PDF equation",
+        region_kind="display",
+    )
+
+    assert selection.latex == r"p = \frac{\exp(a)}{\exp(a) + \exp(b)}"
+    assert selection.source == "vision_math_agent"
+    assert selection.warnings
+    assert selection.confidence < 0.6
+
+
+def test_compact_repair_payload_omits_large_layout_and_duplicate_context():
+    current = math_payload("A grounded explanation.")
+    current.update(
+        {
+            "display_latex": "s = x^2 + y",
+            "paper_context": "context " * 5000,
+            "layout_evidence": {"spans": [{"text": "x"}] * 5000},
+            "evaluation": {"very_large": "feedback " * 5000},
+            "loop": {"iterations": ["large"] * 5000},
+        }
+    )
+    evaluation = judge_result("review", 3.0, "Clarify the computation.")
+
+    payload = _compact_repair_payload(
+        current,
+        evaluation,
+        context="nearby paper context " * 1000,
+        symbols=current["symbols"],
+        evidence=current["paper_evidence"],
+    )
+    encoded = json.dumps(payload)
+
+    assert "layout_evidence" not in encoded
+    assert "very_large" not in encoded
+    assert len(encoded) < 14_000
 
 
 def test_generated_steps_drop_schema_instruction_leaks():
@@ -323,6 +369,8 @@ def test_math_loop_repairs_and_rejudges_weak_explanation(tmp_path, monkeypatch):
     assert result.loop["acceptedRepairs"] == 1
     assert result.loop["initialScore"] == 3.0
     assert result.loop["finalScore"] == 4.4
+    assert "direct definition" in result.derivation_notes
+    assert "score is 5" in result.toy_example
 
 
 def test_math_loop_stops_when_repair_repeats_output(tmp_path, monkeypatch):

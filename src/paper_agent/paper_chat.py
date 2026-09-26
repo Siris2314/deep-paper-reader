@@ -612,6 +612,25 @@ def _model_config(parsed: ParsedPaper, workspace: Workspace, specialist: str) ->
     )
 
 
+def _paper_chat_output_budget() -> int:
+    try:
+        return max(128, min(int(os.getenv("PAPER_CHAT_MAX_TOKENS", "900")), 1600))
+    except ValueError:
+        return 900
+
+
+def _paper_chat_model(config: RunConfig):
+    model = build_direct_chat_model(config)
+    if config.model_provider == "ollama" and hasattr(model, "model_copy"):
+        model = model.model_copy(
+            update={
+                "keep_alive": os.getenv("PAPER_READER_AGENT_KEEP_ALIVE", "15m"),
+                "num_predict": _paper_chat_output_budget(),
+            }
+        )
+    return model
+
+
 def _invoke_specialist(
     parsed: ParsedPaper,
     workspace: Workspace,
@@ -662,10 +681,10 @@ Do not cite an ID that is absent from the packet. Do not wrap the JSON in prose.
         provider=config.model_provider,
         model=config.model,
         components={"specialist prompt": prompt},
-        reserved_output_tokens=int(os.getenv("PAPER_CHAT_MAX_TOKENS", "1400")),
+        reserved_output_tokens=_paper_chat_output_budget(),
         metadata={"question": question[:240], "skill": skill_name},
     )
-    model = build_direct_chat_model(config)
+    model = _paper_chat_model(config)
     raw = str(
         getattr(
             invoke_observed(
@@ -747,13 +766,13 @@ Return JSON with fields answer, cited_evidence_ids, claims, and uncertainties. D
         provider=config.model_provider,
         model=config.model,
         components={"synthesis prompt": prompt},
-        reserved_output_tokens=int(os.getenv("PAPER_CHAT_MAX_TOKENS", "1400")),
+        reserved_output_tokens=_paper_chat_output_budget(),
         metadata={"question": question[:240], "specialists": [item.specialist for item in outputs]},
     )
     raw = str(
         getattr(
             invoke_observed(
-                build_direct_chat_model(config),
+                _paper_chat_model(config),
                 prompt,
                 name="paper-chat-synthesis",
                 model=f"{config.model_provider}:{config.model}",

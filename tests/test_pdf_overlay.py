@@ -74,6 +74,33 @@ def test_pdf_layout_exposes_hoverable_math_regions(tmp_path, sample_pdf):
     assert "where" in display["context"].lower()
 
 
+def test_pdf_layout_rejects_prose_with_incidental_math_characters(tmp_path):
+    pdf = tmp_path / "prose-and-equation.pdf"
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    page.insert_text(
+        (54, 100),
+        "DPO's reward/KL tradeoff strictly dominates PPO in this experiment.",
+        fontsize=11,
+    )
+    page.insert_text(
+        (54, 125),
+        "Standard CoT prompts use n=8 rollouts per prompt and a rubric judge.",
+        fontsize=11,
+    )
+    page.insert_text((180, 180), "q = softmax(x)", fontsize=13, fontname="cour")
+    document.save(pdf)
+    document.close()
+
+    parsed = parse_paper(pdf, tmp_path / "report")
+    layout = page_layout_payload(parsed, [], 1)
+    display = [region for region in layout["mathRegions"] if region["kind"] == "display"]
+
+    assert len(display) == 1
+    assert display[0]["raw"] == "q = softmax(x)"
+    assert display[0]["confidence"] >= 0.6
+
+
 def test_pdf_private_use_glyphs_never_become_display_latex():
     spans = [
         {
@@ -121,9 +148,7 @@ def test_pdf_geometry_reconstructs_summation_limits_across_blocks():
         {"text": ")", "x": 360, "top": 285, "bottom": 295, "size": 10, "font": "Roman10"},
     ]
 
-    assert _geometry_latex(spans) == (
-        r"V_{i,s} = \sum_{l=1}^{L} \mathbb{I} (s \in M_{i,l})"
-    )
+    assert _geometry_latex(spans) == (r"V_{i,s} = \sum_{l=1}^{L} \mathbb{I} (s \in M_{i,l})")
 
 
 def test_pdf_geometry_reconstructs_union_limits_without_attaching_them_to_target():

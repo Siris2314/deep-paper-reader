@@ -40,6 +40,22 @@ _SKIP_COMMANDS = {
     r"\operatorname",
 }
 _INDEX_SYMBOLS = {"t", "s", "i", "j", "h", "l", "k"}
+_GREEK_ALIASES = {
+    "alpha": "α",
+    "beta": "β",
+    "gamma": "γ",
+    "lambda": "λ",
+    "mu": "μ",
+    "nu": "ν",
+    "pi": "π",
+    "rho": "ρ",
+    "sigma": "σ",
+    "tau": "τ",
+    "theta": "θ",
+    "phi": "φ",
+    "psi": "ψ",
+    "omega": "ω",
+}
 
 
 def extract_latex_symbols(latex: str) -> list[str]:
@@ -80,7 +96,9 @@ def extract_latex_symbols(latex: str) -> list[str]:
         cleaned,
     ):
         for expression in limits:
-            for greek in re.findall(r"\\(?:alpha|beta|gamma|lambda|mu|sigma|tau|theta)", expression):
+            for greek in re.findall(
+                r"\\(?:alpha|beta|gamma|lambda|mu|sigma|tau|theta)", expression
+            ):
                 if greek not in symbols:
                     symbols.append(greek)
     return symbols[:24]
@@ -92,42 +110,36 @@ def _symbol_aliases(symbol: str) -> list[str]:
     plain = compact
     plain = re.sub(r"\\(?:mathbb|mathcal|mathbf|mathrm)\{([^{}]+)\}", r"\1", plain)
     plain = plain.replace(r"\ell", "L")
-    plain = plain.replace(r"\gamma", "gamma").replace(r"\alpha", "alpha")
+    for name, glyph in _GREEK_ALIASES.items():
+        if rf"\{name}" in compact:
+            aliases.extend([name, glyph])
+        plain = plain.replace(rf"\{name}", name)
     plain = re.sub(r"\\text\{([^{}]+)\}", r"\1", plain)
-    plain = re.sub(r"[{}_^\\]", "", plain)
-    if plain and plain not in aliases:
-        aliases.append(plain)
-
-    key = _symbol_key(symbol)
-    if key in {"lfl", "mathcallfl"}:
-        aliases.extend(["LFL", "focal loss", "loss is then defined"])
-    elif "mathcals" in key or key == "s":
-        aliases.extend(["batch S", "samples in the batch", "sample set"])
-    elif key.startswith("wt,s") or key.startswith("wts"):
-        aliases.extend(["wt,s", "per-sample weight", "sample weight"])
-    elif key.startswith("p") and "correct" in key:
-        aliases.extend(["p(correct)", "predicted confidence on the correct class"])
-    elif "gamma" in key:
-        aliases.extend(["γ", "gamma", "focusing parameter"])
-    elif "bce" in key:
-        aliases.extend(["LBCE", "ℓBCE", "binary cross-entropy", "BCE loss"])
-    elif key.startswith("it,s") or key.startswith("its"):
-        aliases.extend(["It,s", "lookahead index score", "indexer score"])
-    elif key.startswith("yt,s") or key.startswith("yts"):
-        aliases.extend(["yt,s", "binary label", "label y"])
-    elif key.startswith("yt"):
-        aliases.extend(["Y+t", "positive ground-truth label set", "positive label set"])
-    elif key.startswith("ai") and "golden" in key:
-        aliases.extend(["Agolden", "golden entries", "core active entry"])
-    elif key == "tau":
-        aliases.extend(["τ", "lookahead window", "future temporal window"])
+    readable = re.sub(r"\\[A-Za-z]+", "", plain)
+    readable = readable.replace("^{+}", "+").replace("^+", "+")
+    readable = re.sub(r"[{}\\]", "", readable)
+    aliases.extend(
+        variant
+        for variant in {
+            readable,
+            readable.replace("_", ""),
+            readable.replace("_", ","),
+            readable.replace("_", " "),
+        }
+        if variant
+    )
+    labels = re.findall(r"\\(?:mathrm|text)\{([^{}]+)\}|_\{([A-Za-z]{2,})\}", compact)
+    for groups in labels:
+        aliases.extend(label for label in groups if label)
     return list(dict.fromkeys(alias for alias in aliases if alias))
 
 
 def _symbol_key(symbol: str) -> str:
     value = symbol.lower().replace(" ", "")
     value = re.sub(r"\\(?:mathbb|mathcal|mathbf|mathrm|text)", "", value)
-    value = value.replace(r"\ell", "l").replace(r"\gamma", "gamma")
+    value = value.replace(r"\ell", "l")
+    for name in _GREEK_ALIASES:
+        value = value.replace(rf"\{name}", name)
     return re.sub(r"[{}_^\\()]", "", value)
 
 
@@ -142,8 +154,7 @@ def _line_windows(
     for page, text in parsed.page_text.items():
         lines = [clean_line(line) for line in text.splitlines() if clean_line(line)]
         for index, line in enumerate(lines):
-            low = line.casefold()
-            hits = sum(1 for alias in aliases if alias.casefold() in low)
+            hits = sum(1 for alias in aliases if _alias_in_text(alias, line))
             if not hits:
                 continue
             window = " ".join(lines[max(0, index - 2) : min(len(lines), index + 3)])
@@ -167,84 +178,69 @@ def _line_windows(
     return deduped[:3]
 
 
+def _alias_in_text(alias: str, text: str) -> bool:
+    clean = alias.strip()
+    if not clean:
+        return False
+    if re.fullmatch(r"[A-Za-z0-9]+", clean):
+        flags = 0 if len(clean) == 1 and clean.isupper() else re.I
+        return bool(
+            re.search(
+                rf"(?<![A-Za-z0-9]){re.escape(clean)}(?![A-Za-z0-9])",
+                text,
+                flags,
+            )
+        )
+    compact_text = re.sub(r"\s+", "", text).casefold()
+    compact_alias = re.sub(r"\s+", "", clean).casefold()
+    return compact_alias in compact_text
+
+
 def _known_meaning(symbol: str, context: str) -> tuple[str, str]:
+    """Extract a paper-local description without embedding paper-specific vocabulary."""
     key = _symbol_key(symbol)
-    low = context.casefold()
-    if key.startswith("vi,s") or key == "vis":
-        source = "paper" if "voting score" in low or "majority voting" in low else "inference"
-        return (
-            "Cross-layer voting score: the number of layers that selected entry s at token step i.",
-            source,
-        )
-    if key.startswith("mi,l") or key == "mil":
-        source = "paper" if "selected by layer" in low or "top-p" in low else "inference"
-        return (
-            "The Top-p-selected set of historical entries for token i at layer l.",
-            source,
-        )
     if key == "i" and r"\mathbb" in symbol:
-        return "Indicator function, equal to 1 when its condition is true and 0 otherwise.", "paper"
-    if key == "l" and ("all l layers" in low or "l = 21" in low):
-        return "Total number of model layers participating in cross-layer voting.", "paper"
-    if key.startswith("yt"):
-        source = (
-            "paper"
-            if "positive ground-truth label set" in low or "positive label set" in low
-            else "inference"
-        )
+        return "Indicator function: 1 when its condition holds and 0 otherwise.", "inference"
+    if key == "e" and r"\mathbb" in symbol:
+        return "Expectation over the distribution shown in the equation.", "inference"
+
+    clean_context = re.sub(r"\s+", " ", context).strip()
+    if not clean_context:
+        return "", "unresolved"
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", clean_context)
+        if sentence.strip()
+    ]
+    aliases = sorted(_symbol_aliases(symbol), key=len, reverse=True)
+    definition_cues = re.compile(
+        r"\b(?:let|where|denote[sd]?|represent[sd]?|refer[s]? to|defined as|parameter|"
+        r"matrix|vector|tensor|probability|score|loss|objective|set|weight|label|number of|"
+        r"threshold(?:ing)?|selected?)\b",
+        re.I,
+    )
+    ranked: list[tuple[int, str]] = []
+    for index, sentence in enumerate(sentences):
+        hits = sum(1 for alias in aliases if _alias_in_text(alias, sentence))
+        if not hits:
+            continue
+        score = hits * 3 + (4 if definition_cues.search(sentence) else 0) - index
+        ranked.append((score, sentence))
+    if ranked:
+        sentence = max(ranked, key=lambda item: item[0])[1]
+        sentence = _clean_evidence_excerpt(sentence, max_chars=360)
+        sentence = re.sub(r"\bgolden entries\b", "golden-entry set", sentence, flags=re.I)
+        source = "paper" if definition_cues.search(sentence) else "unresolved"
+        return sentence, source
+
+    # If extraction destroyed the symbol spelling, retain definitional context rather than
+    # fabricating a domain-specific meaning.
+    nearby = next((item for item in sentences if definition_cues.search(item)), "")
+    if nearby:
         return (
-            "Positive ground-truth label set assembled for the lookahead window beginning at token t.",
-            source,
-        )
-    if key.startswith("ai") and "golden" in key:
-        source = "paper" if "golden entr" in low or "core active entr" in low else "inference"
-        return (
-            "Denoised golden-entry set selected for future token i by cross-layer consensus.",
-            source,
-        )
-    if key == "tau":
-        source = "paper" if "lookahead" in low or "future temporal window" in low else "inference"
-        return "Number of future decoding steps included in the lookahead window.", source
-    if key in {"lfl", "mathcallfl"} and "focal loss" in low:
-        return "The sample-averaged focal-loss training objective.", "paper"
-    if key == "s" and r"\mathcal" in symbol:
-        source = "paper" if "samples in the batch" in low or "batch s" in low else "inference"
-        return "The set or batch of training samples over which the objective is averaged.", source
-    if key.startswith("wt,s") or key.startswith("wts"):
-        source = "paper" if "per-sample weight" in low else "inference"
-        return "The weight assigned to sample s at query step t.", source
-    if key.startswith("p") and "correct" in key:
-        source = "paper" if "confidence on the correct class" in low else "inference"
-        return (
-            "The model's probability assigned to the correct binary class for sample (t, s).",
-            source,
-        )
-    if "gamma" in key:
-        source = "paper" if "focusing parameter" in low else "inference"
-        detail = "; the paper sets it to 2" if "γ = 2" in context or "gamma = 2" in low else ""
-        return (
-            f"The focal-loss focusing exponent{detail}; larger values suppress easy examples more strongly.",
-            source,
-        )
-    if "bce" in key:
-        source = "paper" if "binary cross-entropy" in low else "inference"
-        return (
-            "Binary cross-entropy between the predicted index score and its binary target.",
-            source,
-        )
-    if key.startswith("it,s") or key.startswith("its"):
-        source = (
-            "paper" if "lookahead index score" in low or "indexer score" in low else "inference"
-        )
-        return (
-            "The Sigmoid-activated lookahead index score for query token t and historical entry s.",
-            source,
-        )
-    if key.startswith("yt,s") or key.startswith("yts"):
-        source = "paper" if "binary label" in low or "yt,s = 1" in low else "inference"
-        return (
-            "The binary target indicating whether historical entry s is a positive entry for query step t.",
-            source,
+            f"Nearby definition context for {symbol}: "
+            f"{_clean_evidence_excerpt(nearby, max_chars=300)}",
+            "unresolved",
         )
     return "", "unresolved"
 
@@ -304,9 +300,7 @@ def contextual_math_evidence(context: str, limit: int = 3) -> list[str]:
         re.I,
     )
     sentences = [
-        item.strip()
-        for item in re.split(r"(?<=[.!?])\s+", clean)
-        if len(item.strip()) >= 35
+        item.strip() for item in re.split(r"(?<=[.!?])\s+", clean) if len(item.strip()) >= 35
     ]
     ranked = sorted(
         enumerate(sentences),
@@ -316,11 +310,7 @@ def contextual_math_evidence(context: str, limit: int = 3) -> list[str]:
     evidence: list[str] = []
     for _, sentence in ranked:
         excerpt = _clean_evidence_excerpt(sentence)
-        if (
-            excerpt
-            and not _evidence_is_redundant(excerpt, evidence)
-            and excerpt not in evidence
-        ):
+        if excerpt and not _evidence_is_redundant(excerpt, evidence) and excerpt not in evidence:
             evidence.append(excerpt)
         if len(evidence) >= max(1, limit):
             break
@@ -389,8 +379,8 @@ def build_math_context(
         if not meaning:
             meaning = "Meaning was not resolved from the paper text."
             source = "unresolved"
-        symbol_evidence = best[2] if best else ""
-        symbol_page = best[1] if best else None
+        symbol_evidence = best[2] if best else local[:800]
+        symbol_page = best[1] if best else (page if local else None)
         symbols.append(SymbolGrounding(symbol, meaning, source, symbol_evidence, symbol_page))
         evidence_excerpt = _clean_evidence_excerpt(symbol_evidence)
         if (
@@ -441,7 +431,9 @@ def deterministic_math_fallback(
             "intuition": "Easy negatives can dominate a highly imbalanced retrieval dataset. Focal weighting reduces their contribution so optimization spends more capacity on difficult, ambiguous retrieval decisions.",
             "dimensional_analysis": "Every BCE term, focal factor, and sample weight is scalar. Their product is scalar, and averaging over the sample set produces one scalar loss.",
             "implementation_view": "Compute BCE per sample without reduction, multiply by `(1 - p_correct).pow(gamma)` and the sample weights, then take the mean.",
-            "context_fit": "The paper uses this objective to train the decoupled Memory Indexer and states that gamma is 2 while class imbalance is also handled by negative sampling and per-sample weights.",
+            "derivation_notes": "The displayed objective is a weighted BCE with the standard focal factor. Any derivation beyond that decomposition is not present in the retrieved evidence.",
+            "toy_example": "If the correct-class confidence is 0.9 and gamma is 2, the focal multiplier is (1 - 0.9)^2 = 0.01 before applying the sample weight and BCE.",
+            "context_fit": "The paper uses this objective to emphasize difficult examples; dataset-specific sampling and weighting choices must be read from the surrounding evidence.",
             "assumptions_or_missing_details": [],
         }
     qualifier = "averaged " if is_average else ""
@@ -456,6 +448,8 @@ def deterministic_math_fallback(
         "intuition": "The formula packages the surrounding method description into a reproducible computation.",
         "dimensional_analysis": "The paper does not provide enough shape information for a complete dimensional check.",
         "implementation_view": "Translate the displayed operators directly and assert the inferred tensor shapes before execution.",
+        "derivation_notes": "The retrieved evidence does not contain enough information to reconstruct a derivation safely.",
+        "toy_example": "A numeric example is omitted because unresolved symbol meanings could make it misleading.",
         "context_fit": "The equation's role is grounded by its surrounding section and symbol-definition evidence.",
         "assumptions_or_missing_details": [
             "A model-generated explanation was unavailable; this is the deterministic grounded fallback."

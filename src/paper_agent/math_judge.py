@@ -90,6 +90,7 @@ _SUPPORTED_INLINE_COMMANDS = {
     "max",
     "mathrm",
     "middle",
+    "mid",
     "min",
     "mu",
     "nabla",
@@ -101,6 +102,7 @@ _SUPPORTED_INLINE_COMMANDS = {
     "operatorname",
     "overline",
     "partial",
+    "pi",
     "phi",
     "prod",
     "propto",
@@ -117,6 +119,7 @@ _SUPPORTED_INLINE_COMMANDS = {
     "subset",
     "subseteq",
     "sum",
+    "sup",
     "tau",
     "text",
     "textstyle",
@@ -132,9 +135,7 @@ _SUPPORTED_INLINE_COMMANDS = {
 
 
 def _inline_math_issues(explanation: dict[str, Any]) -> list[str]:
-    field_values = [
-        (name, str(explanation.get(name) or "")) for name in _INLINE_MATH_FIELDS
-    ]
+    field_values = [(name, str(explanation.get(name) or "")) for name in _INLINE_MATH_FIELDS]
     for name in ("steps", "assumptions_or_missing_details"):
         items = explanation.get(name)
         if isinstance(items, list):
@@ -182,6 +183,13 @@ def _inline_math_issues(explanation: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(issues))[:12]
 
 
+def _is_positive_number(value: object) -> bool:
+    try:
+        return float(value) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
     latex = str(explanation.get("display_latex") or "").strip()
     layout = (
@@ -190,6 +198,9 @@ def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
         else {}
     )
     geometry_latex = str(layout.get("geometry_latex") or "").strip()
+    crop_provenance = (
+        layout.get("crop_provenance") if isinstance(layout.get("crop_provenance"), dict) else {}
+    )
     symbols = explanation.get("symbols") if isinstance(explanation.get("symbols"), list) else []
     required_text = [
         "role",
@@ -218,6 +229,13 @@ def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
         re.search(r"\\(?:href|url|includegraphics|input|write18)\b", latex, re.I)
     )
     inline_math_issues = _inline_math_issues(explanation)
+    confidence_value = explanation.get("transcription_confidence")
+    transcription_confidence = (
+        float(confidence_value) if isinstance(confidence_value, (int, float)) else None
+    )
+    transcription_warnings = explanation.get("transcription_warnings")
+    if not isinstance(transcription_warnings, list):
+        transcription_warnings = []
     return {
         "required_fields_present": not missing_fields,
         "missing_fields": missing_fields,
@@ -227,6 +245,24 @@ def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
         "geometry_latex_available": bool(geometry_latex),
         "geometry_latex_matches": bool(geometry_latex) and latex == geometry_latex,
         "vision_latex_used": explanation.get("latex_source") == "vision_math_agent",
+        "vision_crop_grounded": (
+            explanation.get("latex_source") != "vision_math_agent"
+            or (
+                bool(crop_provenance.get("sha256"))
+                and _is_positive_number(crop_provenance.get("pixelWidth"))
+                and _is_positive_number(crop_provenance.get("pixelHeight"))
+            )
+        ),
+        "transcription_candidate_count": len(
+            explanation.get("transcription_candidates")
+            if isinstance(explanation.get("transcription_candidates"), dict)
+            else {}
+        ),
+        "transcription_confidence": transcription_confidence,
+        "transcription_confident": (
+            transcription_confidence is None or transcription_confidence >= 0.6
+        ),
+        "transcription_warnings": [str(item) for item in transcription_warnings[:6]],
         "symbol_count": len(symbols),
         "symbol_meanings_complete": bool(symbols)
         and all(
@@ -277,14 +313,14 @@ def _judge_messages(
             "[Lossy PDF extraction omitted; use display_latex and layout_evidence.]"
         )
         candidate["parse"] = {
-            "status": "geometry_is_authoritative",
-            "note": "Do not score flattened parser symbol names.",
+            "status": "geometry_candidate_available",
+            "note": "Compare the selected transcription with the independent geometry candidate.",
         }
     elif checks.get("vision_latex_used"):
         candidate["layout_evidence"] = {
-            "note": "Vision transcription from the source equation crop is authoritative."
+            "note": "Vision supplied the selected crop transcription; it still requires validation."
         }
-        candidate["parse"] = {"status": "vision_is_authoritative"}
+        candidate["parse"] = {"status": "vision_candidate_selected"}
     return [
         {
             "role": "system",
@@ -293,8 +329,11 @@ def _judge_messages(
                 "candidate only against the raw equation, nearby paper text, deterministic parse, and stated "
                 "symbol provenance. Score correctness, paper grounding, symbol coverage, LaTeX fidelity, and "
                 "usefulness from 1 to 5. Penalize unsupported meanings and semantic changes in reconstructed "
-                "LaTeX. The raw PDF text is lossy and may flatten superscripts and subscripts. When PDF geometry "
-                "is supplied, evaluate notation against layout_evidence.geometry_latex, not the flattened raw text. "
+                "LaTeX. Compare all transcription_candidates and their structural similarities; no candidate is "
+                "correct merely because it came from vision, geometry, or SymPy. The raw PDF text is lossy and "
+                "may flatten superscripts and subscripts. Crop provenance shows that vision received a bounded "
+                "source image, but self-reported confidence is not proof of correctness. Use PDF geometry as "
+                "independent evidence rather than unquestioned ground truth. "
                 "Do not call DQ, IUQ, or other labels unsupported merely because raw extraction inserted spaces. "
                 "Judge usefulness using the step-by-step explanation, symbol provenance, dimensional analysis, "
                 "intuition, implementation view, and cited paper evidence. Generic prose or an empty symbol table "
@@ -443,11 +482,7 @@ def evaluate_math_explanation(
                     "judgeMemoryEpisodes": len(working_memory["episodes"]),
                 },
             )
-            judge_name = (
-                "judge-initial"
-                if phase_key == "initial"
-                else f"judge-after-{phase_key}"
-            )
+            judge_name = "judge-initial" if phase_key == "initial" else f"judge-after-{phase_key}"
             if model_attempt > 1:
                 judge_name = f"{judge_name}-fallback-{model_attempt}"
             if use_direct_structured_output and hasattr(current_model, "with_structured_output"):
@@ -554,6 +589,8 @@ def evaluate_math_explanation(
         or not checks["latex_braces_balanced"]
         or not checks["latex_commands_safe"]
         or not checks["inline_math_valid"]
+        or not checks["transcription_confident"]
+        or not checks["vision_crop_grounded"]
         or min(scores) < 2
     )
     verdict = (
@@ -569,6 +606,15 @@ def evaluate_math_explanation(
         issues.append(f"Missing required fields: {', '.join(checks['missing_fields'])}")
     if not checks["latex_present"]:
         issues.append("No display LaTeX was produced.")
+    if not checks["transcription_confident"]:
+        issues.append(
+            "The equation transcription is not independently reliable enough to accept; verify the source crop."
+        )
+        issues.extend(str(item) for item in checks["transcription_warnings"])
+    if not checks["vision_crop_grounded"]:
+        issues.append(
+            "Vision LaTeX was not linked to a verifiable bounded crop from the source PDF."
+        )
     issues.extend(str(item) for item in checks["inline_math_issues"])
     issues = list(dict.fromkeys(issues))
     return MathJudgeResult(

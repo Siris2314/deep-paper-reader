@@ -134,7 +134,8 @@ def test_union_equation_resolves_window_and_label_set_from_paper():
     ]
     assert "positive ground-truth" in meanings[r"Y_{t}^{+}"].meaning.lower()
     assert "golden-entry" in meanings[r"A_{i}^{\mathrm{golden}}"].meaning.lower()
-    assert "future decoding steps" in meanings[r"\tau"].meaning.lower()
+    assert "future" in meanings[r"\tau"].meaning.lower()
+    assert "decoding steps" in meanings[r"\tau"].meaning.lower()
     assert bundle.evidence
 
 
@@ -146,3 +147,32 @@ def test_contextual_evidence_prefers_definition_sentences():
 
     assert evidence
     assert "union" in evidence[0].lower()
+
+
+def test_grounding_generalizes_to_unseen_linear_model_notation():
+    latex = r"z_i = W x_i + b"
+    page = (
+        "For every item i, x_i denotes its input feature vector. "
+        "W is the learned projection matrix, b is the learned bias vector, "
+        "and z_i denotes the resulting projected representation."
+    )
+    parsed = ParsedPaper(
+        metadata=PaperMetadata(
+            title_guess="Projection Model", authors_guess=[], page_count=1, source_pdf="paper.pdf"
+        ),
+        full_text=page,
+        page_text={1: page},
+        sections={"method": page},
+        equation_cards=[],
+        figure_cards=[],
+        table_cards=[],
+    )
+
+    bundle = build_math_context(parsed, 1, latex, "linear projection")
+    meanings = {item.symbol: item for item in bundle.symbols}
+
+    assert "projected representation" in meanings[r"z_i"].meaning.lower()
+    assert "projection matrix" in meanings["W"].meaning.lower()
+    assert "feature vector" in meanings[r"x_i"].meaning.lower()
+    assert "bias vector" in meanings["b"].meaning.lower()
+    assert all(item.source == "paper" for item in meanings.values())

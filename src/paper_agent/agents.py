@@ -12,7 +12,7 @@ from langchain_core.tools import tool
 from paper_agent.claim_ledger import add_claim, save_claim_ledger, validate_claims_json
 from paper_agent.config import DEFAULT_OLLAMA_MODEL, RunConfig
 from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
-from paper_agent.parser import ParsedPaper, parsed_artifact_manifest, parsed_summary_for_prompt
+from paper_agent.parser import ParsedPaper, parsed_artifact_manifest
 from paper_agent.schemas import ClaimRecord
 from paper_agent.tavily_research import build_tavily_tools, run_tavily_prefetch
 from paper_agent.workspace import Workspace
@@ -489,6 +489,43 @@ def build_agent(config: RunConfig, parsed: ParsedPaper, workspace: Workspace):
     )
 
 
+def _lean_paper_bundle(parsed: ParsedPaper, max_chars: int = 12_000) -> str:
+    section_names = ", ".join(parsed.sections) or "none detected"
+    abstract = parsed.sections.get("abstract", "").strip()
+    if not abstract:
+        abstract = parsed.page_text.get(1, "").strip()
+    equation_preview = "\n".join(
+        f"- {card.id} page {card.page}: {card.raw[:220]}" for card in parsed.equation_cards[:8]
+    )
+    figure_preview = "\n".join(
+        f"- {card.id} page {card.page}: {card.caption[:220]}" for card in parsed.figure_cards[:6]
+    )
+    table_preview = "\n".join(
+        f"- {card.id} page {card.page}: {card.caption[:220]}" for card in parsed.table_cards[:6]
+    )
+    bundle = f"""
+Title: {parsed.metadata.title_guess or "Untitled paper"}
+Pages: {parsed.metadata.page_count}
+Detected sections: {section_names}
+
+Abstract or first-page overview:
+{abstract[:4500] or "Unavailable."}
+
+Equation index:
+{equation_preview or "No equation candidates detected."}
+
+Figure index:
+{figure_preview or "No figure captions detected."}
+
+Table index:
+{table_preview or "No table captions detected."}
+
+This is an index, not the paper body. Retrieve relevant sections and artifacts with workspace tools
+before making claims; do not infer omitted method or result details from this bundle.
+""".strip()
+    return bundle[:max_chars]
+
+
 def build_user_prompt(config: RunConfig, parsed: ParsedPaper, workspace: Workspace) -> str:
     tavily_status = "disabled"
     tavily_status_path = workspace.path("web/tavily_status.json")
@@ -504,7 +541,7 @@ def build_user_prompt(config: RunConfig, parsed: ParsedPaper, workspace: Workspa
         tavily_status = "requested, but disabled because TAVILY_API_KEY is missing"
 
     artifact_manifest = json.dumps(parsed_artifact_manifest(parsed), indent=2, ensure_ascii=False)
-    paper_bundle = parsed_summary_for_prompt(parsed, max_chars=config.max_chars)
+    paper_bundle = _lean_paper_bundle(parsed)
 
     strict_note = (
         "Use final/claim_ledger.json schema strictly."

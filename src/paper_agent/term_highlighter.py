@@ -295,11 +295,7 @@ def _research_text(parsed: ParsedPaper) -> str:
 
 def _candidate_is_noise(term: str) -> bool:
     low = term.casefold().strip()
-    if (
-        not low
-        or low in PHRASE_BOUNDARIES
-        or low in METADATA_TERMS
-    ):
+    if not low or low in PHRASE_BOUNDARIES or low in METADATA_TERMS:
         return True
     if re.search(r"\barxiv\b|\bdoi\b|\bcs\.[a-z]{2}\b", low):
         return True
@@ -507,8 +503,7 @@ def extract_significant_terms(
         section_text
         for name, section_text in parsed.sections.items()
         if any(
-            label in name.casefold()
-            for label in ("abstract", "approach", "introduction", "method")
+            label in name.casefold() for label in ("abstract", "approach", "introduction", "method")
         )
     )
     equation_text = "\n".join(card.raw for card in parsed.equation_cards)

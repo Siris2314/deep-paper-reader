@@ -75,9 +75,7 @@ def test_deterministic_judge_rejects_bare_latex_in_prose():
     checks = deterministic_math_checks(payload)
 
     assert checks["inline_math_valid"] is False
-    assert any(
-        "outside math delimiters" in issue for issue in checks["inline_math_issues"]
-    )
+    assert any("outside math delimiters" in issue for issue in checks["inline_math_issues"])
 
 
 def test_textstyle_is_valid_when_delimited():
@@ -85,6 +83,99 @@ def test_textstyle_is_valid_when_delimited():
     payload["steps"] = [r"Compute $\textstyle \sum_i p_i$."]
 
     assert deterministic_math_checks(payload)["inline_math_valid"] is True
+
+
+def test_standard_probability_and_supremum_commands_are_valid():
+    payload = explanation_payload()
+    payload["steps"] = [
+        r"Compare $\pi_\theta(y \mid x)$ with $\pi_{\mathrm{ref}}(y \mid x)$.",
+        r"Take $\sup_{q \in \mathcal{Q}} f(q)$ over the feasible family.",
+    ]
+
+    checks = deterministic_math_checks(payload)
+
+    assert checks["inline_math_valid"] is True
+
+
+def test_uncertain_transcription_is_a_deterministic_failure(tmp_path):
+    class GenerousJudge:
+        def invoke(self, payload):
+            score = JudgeScore(score=5, justification="Looks good.")
+            return {
+                "structured_response": MathJudgePayload(
+                    correctness=score,
+                    paper_grounding=score,
+                    symbol_coverage=score,
+                    latex_fidelity=score,
+                    usefulness=score,
+                    summary="Generous assessment.",
+                    issues=[],
+                )
+            }
+
+    payload = explanation_payload()
+    payload["transcription_confidence"] = 0.4
+    payload["transcription_warnings"] = ["Vision and PDF geometry disagree."]
+
+    result = evaluate_math_explanation(
+        Workspace(tmp_path / "workspace"),
+        payload,
+        chat_model=object(),
+        agent_factory=lambda **kwargs: GenerousJudge(),
+    )
+
+    assert result.verdict == "fail"
+    assert result.deterministic_checks["transcription_confident"] is False
+    assert any("transcription" in issue.lower() for issue in result.issues)
+
+
+def test_vision_transcription_requires_bounded_crop_provenance(tmp_path):
+    class GenerousJudge:
+        def invoke(self, payload):
+            score = JudgeScore(score=5, justification="Looks good.")
+            return {
+                "structured_response": MathJudgePayload(
+                    correctness=score,
+                    paper_grounding=score,
+                    symbol_coverage=score,
+                    latex_fidelity=score,
+                    usefulness=score,
+                    summary="Generous assessment.",
+                    issues=[],
+                )
+            }
+
+    payload = explanation_payload()
+    payload["latex_source"] = "vision_math_agent"
+    payload["transcription_confidence"] = 0.8
+    payload["transcription_candidates"] = {"vision_math_agent": payload["display_latex"]}
+
+    result = evaluate_math_explanation(
+        Workspace(tmp_path / "workspace"),
+        payload,
+        chat_model=object(),
+        agent_factory=lambda **kwargs: GenerousJudge(),
+    )
+
+    assert result.verdict == "fail"
+    assert result.deterministic_checks["vision_crop_grounded"] is False
+    assert any("bounded crop" in issue.lower() for issue in result.issues)
+
+
+def test_malformed_crop_provenance_is_rejected_without_crashing():
+    payload = explanation_payload()
+    payload["latex_source"] = "vision_math_agent"
+    payload["layout_evidence"] = {
+        "crop_provenance": {
+            "sha256": "abc123",
+            "pixelWidth": "not-a-number",
+            "pixelHeight": None,
+        }
+    }
+
+    checks = deterministic_math_checks(payload)
+
+    assert checks["vision_crop_grounded"] is False
 
 
 def test_judge_prompt_includes_human_alignment_memory():

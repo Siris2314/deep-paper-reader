@@ -13,15 +13,15 @@ Explain paper math from exact paper locations and parsed equation cards.
 2. Group overlapping PDF spans, subscripts, superscripts, and wrapped rows into one equation with multiple highlight rectangles.
 3. Detect inline math-font spans in explanatory prose and retain sentences containing `where`, `denotes`, `represents`, definitions, dimensions, or assumptions.
 4. Attempt deterministic SymPy parsing for LaTeX or safe plain expressions; retain parser errors when extraction is lossy.
-5. Transcribe the equation independently from its explanation. For a multimodal model, send only a tight equation crop and request LaTeX, not reasoning.
+5. Transcribe the equation independently from its explanation. For a multimodal model, send only a tight equation crop and request LaTeX, confidence, and legibility issues, not reasoning. Retain the crop bounds, dimensions, and content hash as provenance.
 6. Extract symbols from the recovered LaTeX, then retrieve position-sensitive definition windows from the current page and the rest of the paper. Do not derive the symbol table from corrupted plain PDF text when faithful LaTeX is available.
 7. Label each symbol meaning as paper-stated, inferred, or unresolved and retain the defining page text. An empty symbol table is a failed grounding stage.
 8. Run a compact reasoning agent only after transcription and symbol grounding. Do not ask this call to repeat perception, LaTeX reconstruction, or symbol extraction.
 9. Classify the equation's role: definition, score, objective, loss, update rule, constraint, metric, or theorem.
-10. Give two to six ordered computational steps, intuition, an implementation view, and tensor shapes. Clearly label unknown or inferred dimensions.
+10. Give two to six ordered computational steps, intuition, an implementation view, tensor shapes, derivation notes, and a small faithful example when useful. Clearly separate derivation steps shown by the paper, standard algebraic consequences, and omitted steps; label unknown or inferred dimensions.
 11. When the model stage fails, produce a deterministic grounded fallback from the recovered equation and symbol table instead of a generic parser-only message. Persist the model exceptions for debugging.
 12. Cite one to three paper facts that support the interpretation and explain the equation's concrete role in the method. Reject generic roles such as `mathematical inference`.
-13. Run deterministic checks and an independent judge model across correctness, paper grounding, symbol coverage, LaTeX fidelity, and usefulness.
+13. Reconcile the parser, PDF-geometry, and crop transcriptions as fallible candidates. Run deterministic checks and an independent judge model across correctness, paper grounding, symbol coverage, LaTeX fidelity, crop provenance, transcription confidence, and usefulness.
 14. If the answer does not pass and both generation and judging are available, convert low-scoring dimensions and judge issues into targeted repair instructions. Keep the recovered equation, paper evidence, and paper-sourced symbol meanings fixed.
 15. Re-run the independent judge after each repair. Accept a replacement only when its verdict improves or its score rises by the configured minimum and every deterministic repair target is resolved.
 16. Retrieve a bounded set of user-confirmed judging principles and similar correction cases. Treat this memory as rubric guidance, never as paper evidence and never as authority over deterministic checks.
@@ -44,6 +44,9 @@ Use equation cards:
 - paper_evidence
 - implementation_view
 - derivation_notes
+- toy_example
+- transcription_confidence
+- explanation_confidence
 - assumptions_or_missing_details
 
 ## Code Offload

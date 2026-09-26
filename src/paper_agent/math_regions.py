@@ -35,6 +35,61 @@ def _is_math_span(span: dict[str, Any]) -> bool:
     return any(hint in font for hint in MATH_FONT_HINTS) or bool(MATH_CHARS.search(text))
 
 
+def _is_math_font_span(span: dict[str, Any]) -> bool:
+    font = str(span.get("font") or "").casefold()
+    return any(hint in font for hint in MATH_FONT_HINTS)
+
+
+def _prose_word_count(text: str) -> int:
+    return len(re.findall(r"[A-Za-z]{2,}", text))
+
+
+def _obvious_non_math_line(text: str, operator_count: int) -> bool:
+    words = _prose_word_count(text)
+    if re.search(r"https?://|www\.|\bdoi\b|@", text, re.I):
+        return True
+    if words >= 8 and operator_count <= 1:
+        return True
+    if re.match(r"^\s*[•·]\s+", text) and words >= 5:
+        return True
+    return False
+
+
+def _display_confidence(
+    group: list[dict[str, Any]], page_width: float, layout: dict[str, object]
+) -> float:
+    text = " ".join(str(item["text"]) for item in group)
+    operator_count = sum(int(item["operator_count"]) for item in group)
+    math_ratio = max((float(item["math_ratio"]) for item in group), default=0.0)
+    box = _union([item["bbox"] for item in group])
+    center = (box[0] + box[2]) / 2
+    centered = abs(center - page_width / 2) <= page_width * 0.24
+    words = _prose_word_count(text)
+
+    score = 0.12
+    if "=" in text or re.search(r"[≤≥≈<>]", text):
+        score += 0.28
+    if looks_like_equation(text):
+        score += 0.12
+    if operator_count >= 2:
+        score += 0.12
+    if math_ratio >= 0.3:
+        score += 0.2
+    elif math_ratio >= 0.12:
+        score += 0.1
+    if centered:
+        score += 0.1
+    if words <= 5:
+        score += 0.08
+    if layout.get("geometry_latex"):
+        score += 0.12
+    if _obvious_non_math_line(text, operator_count):
+        score -= 0.45
+    elif words >= 10 and operator_count < 3:
+        score -= 0.25
+    return round(max(0.0, min(score, 1.0)), 3)
+
+
 def _rect_payload(
     rect: tuple[float, float, float, float],
     page_width: float,
@@ -165,7 +220,9 @@ def _geometry_latex(spans: list[dict[str, object]]) -> str:
 
     rendered_rows: list[str] = []
     script_count = 0
-    for row_spans in sorted(row_groups, key=lambda row: sum(center(item) for item in row) / len(row)):
+    for row_spans in sorted(
+        row_groups, key=lambda row: sum(center(item) for item in row) / len(row)
+    ):
         baseline = sorted(center(span) for span in row_spans)[len(row_spans) // 2]
         atoms = [
             {
@@ -177,9 +234,7 @@ def _geometry_latex(spans: list[dict[str, object]]) -> str:
             for span in sorted(row_spans, key=lambda item: float(item["x"]))
         ]
         nearby_scripts = [
-            span
-            for span in script_spans
-            if abs(center(span) - baseline) <= max_size * 1.7
+            span for span in script_spans if abs(center(span) - baseline) <= max_size * 1.7
         ]
         for span in sorted(nearby_scripts, key=lambda item: float(item["x"])):
             script_x = float(span["x"])
@@ -251,10 +306,12 @@ def extract_math_regions(
             if not text:
                 continue
             total_width = max(1.0, bbox[2] - bbox[0])
+            # A regular prose span containing one slash or equals sign is not a math span.
+            # Count full span width only when the PDF font itself is mathematical.
             math_width = sum(
                 max(0.0, span_box[2] - span_box[0])
                 for span in spans
-                if _is_math_span(span) and (span_box := _bbox(span.get("bbox")))
+                if _is_math_font_span(span) and (span_box := _bbox(span.get("bbox")))
             )
             max_size = max(float(span.get("size") or 0) for span in spans)
             operator_count = len(MATH_CHARS.findall(text))
@@ -275,15 +332,14 @@ def extract_math_regions(
     claimed_lines: set[tuple[int, int]] = set()
     candidates: list[dict[str, Any]] = []
     for line in lines:
-        explanatory_prose = (
-            bool(EXPLANATION_HINTS.search(line["text"]))
-            and len(re.findall(r"[A-Za-z]{2,}", line["text"])) >= 3
-        )
+        prose_words = _prose_word_count(line["text"])
+        explanatory_prose = bool(EXPLANATION_HINTS.search(line["text"])) and prose_words >= 3
         is_seed = line["max_size"] >= 6 and (
             (line["math_ratio"] >= 0.3 and (not explanatory_prose or line["math_ratio"] >= 0.75))
             or (
                 looks_like_equation(line["text"])
-                and len(line["text"]) <= 100
+                and len(line["text"]) <= 140
+                and (prose_words <= 6 or line["math_ratio"] >= 0.2)
                 and not explanatory_prose
             )
             or (
@@ -293,7 +349,7 @@ def extract_math_regions(
                 and not explanatory_prose
             )
         )
-        if is_seed:
+        if is_seed and not _obvious_non_math_line(line["text"], line["operator_count"]):
             candidates.append(line)
 
     # PDF generators often emit brackets, bases, and subscripts as separate lines. Pull short
@@ -304,6 +360,8 @@ def extract_math_regions(
         for line in block_lines:
             key = (line["block"], line["line"])
             if key in candidate_keys or len(line["text"]) > 80 or line["max_size"] < 5:
+                continue
+            if _obvious_non_math_line(line["text"], line["operator_count"]):
                 continue
             if line["math_ratio"] < 0.12 and line["operator_count"] == 0:
                 continue
@@ -339,12 +397,14 @@ def extract_math_regions(
             display_groups[-1].extend(row)
         else:
             display_groups.append(list(row))
-    for group in display_groups:
-        claimed_lines.update((item["block"], item["line"]) for item in group)
-
     regions: list[dict[str, Any]] = []
     sorted_lines = sorted(lines, key=lambda item: (item["bbox"][1], item["bbox"][0]))
     for group in display_groups:
+        layout_evidence = _layout_evidence(group)
+        confidence = _display_confidence(group, page_width, layout_evidence)
+        if confidence < 0.6:
+            continue
+        claimed_lines.update((item["block"], item["line"]) for item in group)
         rows = _visual_rows(group)
         row_rects = [_union([item["bbox"] for item in row]) for row in rows]
         raw_rows = [
@@ -366,9 +426,10 @@ def extract_math_regions(
             {
                 "id": region_id,
                 "kind": "display",
+                "confidence": confidence,
                 "raw": "\n".join(row for row in raw_rows if row),
                 "context": "\n".join(nearby[:14]),
-                "layout_evidence": _layout_evidence(group),
+                "layout_evidence": layout_evidence,
                 "rects": [_rect_payload(rect, page_width, page_height) for rect in row_rects],
                 **_rect_payload(group_box, page_width, page_height),
             }
@@ -378,7 +439,12 @@ def extract_math_regions(
         if (line["block"], line["line"]) in claimed_lines or line["max_size"] < 7:
             continue
         spans = line["spans"]
-        math_indices = [index for index, span in enumerate(spans) if _is_math_span(span)]
+        math_indices = [
+            index
+            for index, span in enumerate(spans)
+            if _is_math_font_span(span)
+            or (_is_math_span(span) and _prose_word_count(str(span.get("text") or "")) <= 3)
+        ]
         if not math_indices:
             continue
         if (
@@ -435,6 +501,15 @@ def extract_math_regions(
                 {
                     "id": region_id,
                     "kind": "inline",
+                    "confidence": round(
+                        min(
+                            0.9,
+                            0.55
+                            + line["math_ratio"] * 0.25
+                            + min(0.1, line["operator_count"] * 0.04),
+                        ),
+                        3,
+                    ),
                     "raw": raw,
                     "context": context,
                     "rects": [_rect_payload(rect, page_width, page_height, pad_x=5, pad_y=3)],
