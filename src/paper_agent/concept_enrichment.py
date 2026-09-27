@@ -19,6 +19,7 @@ from paper_agent.concepts import (
 )
 from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage
+from paper_agent.harness import HarnessLimitExceeded, create_harness_agent, harness_workflow
 from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
 from paper_agent.parser import ParsedPaper
 from paper_agent.term_highlighter import method_section_text
@@ -257,6 +258,7 @@ def _message_text(message: Any) -> str:
     return text.strip()
 
 
+@harness_workflow("concept")
 def synthesize_why_it_matters(
     parsed: ParsedPaper,
     workspace: Workspace,
@@ -277,9 +279,9 @@ def synthesize_why_it_matters(
         os.getenv("MODEL_NAME", os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)),
     )
     if agent_factory is None:
-        from deepagents import create_deep_agent
+        from langchain.agents import create_agent
 
-        agent_factory = create_deep_agent
+        agent_factory = create_agent
 
     model_names = [primary_model]
     if chat_model is None and provider == "ollama":
@@ -327,7 +329,8 @@ def synthesize_why_it_matters(
                 reserved_output_tokens=output_budget,
                 metadata={"term": term},
             )
-            agent = agent_factory(
+            agent = create_harness_agent(
+                agent_factory,
                 model=current_model,
                 tools=[],
                 system_prompt=system_prompt,
@@ -352,6 +355,8 @@ def synthesize_why_it_matters(
             if not answer:
                 raise RuntimeError("empty response")
             return answer, f"{provider}:{model_name}"
+        except HarnessLimitExceeded:
+            raise
         except Exception as exc:
             failures.append(f"{model_name}: {exc}")
         if chat_model is not None:
@@ -387,6 +392,8 @@ def _enrich_concept_card_impl(
             progress("paper_agent", "The local paper agent is analyzing why the term matters here.")
         why, agent_model = synthesize_why_it_matters(parsed, workspace, term)
         why_source = "paper_agent"
+    except HarnessLimitExceeded:
+        raise
     except Exception as exc:
         why = f"Paper-agent synthesis failed: {exc}"
         agent_model = "unavailable"
@@ -417,6 +424,7 @@ def _enrich_concept_card_impl(
     return card
 
 
+@harness_workflow("concept")
 def enrich_concept_card(
     parsed: ParsedPaper,
     workspace: Workspace,

@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from paper_agent.agents import build_chat_model
 from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage, response_schema_text
+from paper_agent.harness import HarnessLimitExceeded, create_harness_agent, harness_workflow
 from paper_agent.judge_memory import retrieve_math_judge_memory
 from paper_agent.observability import invoke_observed, observed_stage
 from paper_agent.workspace import Workspace
@@ -366,6 +367,7 @@ def _trace_phase(value: str) -> str:
     return clean or "initial"
 
 
+@harness_workflow("math")
 def evaluate_math_explanation(
     workspace: Workspace,
     explanation: dict[str, Any],
@@ -431,9 +433,9 @@ def evaluate_math_explanation(
     model_names = [name for name in dict.fromkeys(model_names) if name != generator] or [primary]
     use_direct_structured_output = agent_factory is None
     if agent_factory is None:
-        from deepagents import create_deep_agent
+        from langchain.agents import create_agent
 
-        agent_factory = create_deep_agent
+        agent_factory = create_agent
 
     failures: list[str] = []
     judged: dict[str, Any] | None = None
@@ -505,7 +507,8 @@ def evaluate_math_explanation(
                 )
                 used_model = f"{provider}:{model_name}"
                 break
-            judge = agent_factory(
+            judge = create_harness_agent(
+                agent_factory,
                 model=current_model,
                 tools=[],
                 system_prompt=messages[0]["content"],
@@ -527,6 +530,8 @@ def evaluate_math_explanation(
             judged = _structured_payload(result)
             used_model = f"{provider}:{model_name}"
             break
+        except HarnessLimitExceeded:
+            raise
         except Exception as exc:
             failures.append(f"{model_name}: {exc}")
         if chat_model is not None:

@@ -11,11 +11,20 @@ from langchain_core.tools import tool
 
 from paper_agent.claim_ledger import add_claim, save_claim_ledger, validate_claims_json
 from paper_agent.config import DEFAULT_OLLAMA_MODEL, RunConfig
+from paper_agent.debug import (
+    write_agent_messages_markdown,
+    write_debug_json,
+    write_exception,
+    write_run_config,
+)
+from paper_agent.harness import (
+    HarnessLimitExceeded,
+    bounded_env,
+    create_harness_agent,
+    harness_workflow,
+)
 from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
 from paper_agent.parser import ParsedPaper, parsed_artifact_manifest
-from paper_agent.schemas import ClaimRecord
-from paper_agent.tavily_research import build_tavily_tools, run_tavily_prefetch
-from paper_agent.workspace import Workspace
 from paper_agent.report_evaluator import (
     build_minimal_claim_ledger,
     build_repair_prompt,
@@ -23,18 +32,15 @@ from paper_agent.report_evaluator import (
     evaluate_report_text,
     save_report_evaluation,
 )
-from paper_agent.debug import (
-    write_agent_messages_markdown,
-    write_debug_json,
-    write_exception,
-    write_run_config,
-)
+from paper_agent.schemas import ClaimRecord
 from paper_agent.skills import (
     create_deep_agent_with_optional_skills,
     format_skill_manifest_for_prompt,
     skill_manifest,
 )
+from paper_agent.tavily_research import build_tavily_tools, run_tavily_prefetch
 from paper_agent.term_memory import ensure_term_memory_files
+from paper_agent.workspace import Workspace
 
 SUPERVISOR_PROMPT = """
 You are a lean Deep Research Paper Agent supervisor.
@@ -253,6 +259,8 @@ def build_chat_model(config: RunConfig):
             model=model_name,
             base_url=config.ollama_base_url,
             temperature=0.1,
+            num_predict=bounded_env("PAPER_HARNESS_MAX_OUTPUT_TOKENS", 1800, 128, 8192),
+            keep_alive=os.getenv("PAPER_READER_AGENT_KEEP_ALIVE", "15m"),
             num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
             client_kwargs={
                 "timeout": max(10.0, min(float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "120")), 600.0))
@@ -293,6 +301,8 @@ def build_direct_chat_model(config: RunConfig):
             model=model_name,
             base_url=config.ollama_base_url,
             temperature=0.0,
+            num_predict=bounded_env("PAPER_HARNESS_MAX_OUTPUT_TOKENS", 1800, 128, 8192),
+            keep_alive=os.getenv("PAPER_READER_AGENT_KEEP_ALIVE", "15m"),
             num_ctx=int(os.getenv("OLLAMA_NUM_CTX", "8192")),
             client_kwargs={
                 "timeout": max(10.0, min(float(os.getenv("OLLAMA_REQUEST_TIMEOUT", "120")), 600.0))
@@ -326,6 +336,29 @@ def invoke_text_model(
     return str(response)
 
 
+def _retrieval_slice(text: str, max_chars: int, offset: int) -> str:
+    offset = max(0, offset)
+    size = max(1, min(max_chars, 6000))
+    end = min(len(text), offset + size)
+    result = text[offset:end]
+    if end < len(text):
+        result += f"\n[More available: offset={end}, total_chars={len(text)}]"
+    return result
+
+
+def _artifact_page(cards: list, offset: int, limit: int) -> str:
+    offset = max(0, offset)
+    end = min(len(cards), offset + max(1, min(limit, 12)))
+    return json.dumps(
+        {
+            "cards": [card.model_dump() for card in cards[offset:end]],
+            "next_offset": end if end < len(cards) else None,
+            "total": len(cards),
+        },
+        ensure_ascii=False,
+    )
+
+
 def build_workspace_tools(workspace: Workspace, parsed: ParsedPaper):
     paper_text = parsed.full_text
     sections = parsed.sections
@@ -340,10 +373,10 @@ def build_workspace_tools(workspace: Workspace, parsed: ParsedPaper):
             return f"ERROR saving file: {exc}"
 
     @tool
-    def read_workspace_file(rel_path: str, max_chars: int = 80_000) -> str:
-        """Read a workspace file by relative path, optionally truncated."""
+    def read_workspace_file(rel_path: str, max_chars: int = 6000, offset: int = 0) -> str:
+        """Read a bounded character slice of a workspace file; use offset for the next slice."""
         try:
-            return workspace.read_text(rel_path, max_chars=max_chars)
+            return _retrieval_slice(workspace.read_text(rel_path), max_chars, offset)
         except Exception as exc:
             return f"ERROR reading file: {exc}"
 
@@ -387,29 +420,29 @@ def build_workspace_tools(workspace: Workspace, parsed: ParsedPaper):
         return "\n\n--- HIT ---\n\n".join(hits) if hits else "No direct text matches found."
 
     @tool
-    def get_section(section_name: str, max_chars: int = 80_000) -> str:
-        """Return a detected paper section by name, e.g. introduction, methodology, experiments."""
+    def get_section(section_name: str, max_chars: int = 6000, offset: int = 0) -> str:
+        """Read a section slice by name; use the returned offset to continue long sections."""
         key = section_name.lower().strip().replace(" ", "_").replace("/", "_")
         if key in sections:
             text = sections[key]
-            return text[:max_chars] + ("\n\n[TRUNCATED]" if len(text) > max_chars else "")
+            return _retrieval_slice(text, max_chars, offset)
         available = ", ".join(sections.keys())
         return f"Section not found. Available sections: {available}"
 
     @tool
-    def get_equation_cards() -> str:
-        """Return detected equation cards as JSON."""
-        return json.dumps([card.model_dump() for card in parsed.equation_cards], indent=2)
+    def get_equation_cards(offset: int = 0, limit: int = 8) -> str:
+        """Return a bounded page of equation cards as JSON, with the next card offset."""
+        return _artifact_page(parsed.equation_cards, offset, limit)
 
     @tool
-    def get_figure_cards() -> str:
-        """Return detected figure captions and surrounding text as JSON."""
-        return json.dumps([card.model_dump() for card in parsed.figure_cards], indent=2)
+    def get_figure_cards(offset: int = 0, limit: int = 8) -> str:
+        """Return a bounded page of figure captions as JSON, with the next card offset."""
+        return _artifact_page(parsed.figure_cards, offset, limit)
 
     @tool
-    def get_table_cards() -> str:
-        """Return detected table captions and raw table text as JSON."""
-        return json.dumps([card.model_dump() for card in parsed.table_cards], indent=2)
+    def get_table_cards(offset: int = 0, limit: int = 8) -> str:
+        """Return a bounded page of table cards as JSON, with the next card offset."""
+        return _artifact_page(parsed.table_cards, offset, limit)
 
     @tool
     def add_claim_to_ledger(
@@ -479,8 +512,8 @@ def build_agent(config: RunConfig, parsed: ParsedPaper, workspace: Workspace):
     _, learned_terms_memory = ensure_term_memory_files()
     project_memory = Path(__file__).resolve().parents[2] / "AGENTS.md"
 
-    return create_deep_agent_with_optional_skills(
-        create_deep_agent,
+    return create_harness_agent(
+        lambda **kwargs: create_deep_agent_with_optional_skills(create_deep_agent, **kwargs),
         model=chat_model,
         tools=[*local_tools, *tavily_tools],
         system_prompt=SUPERVISOR_PROMPT,
@@ -710,6 +743,8 @@ def _run_analysis_impl(config: RunConfig, parsed: ParsedPaper) -> str:
                     claim_text = json.dumps(build_minimal_claim_ledger(parsed), indent=2)
                     fallback_eval = evaluate_report_text(parsed, final_text, claim_text)
                     save_report_evaluation(workspace, fallback_eval)
+            except HarnessLimitExceeded:
+                raise
             except Exception as exc:
                 write_exception(workspace, exc)
                 fallback = deterministic_fallback_report(parsed, evaluation)
@@ -732,6 +767,7 @@ def _run_analysis_impl(config: RunConfig, parsed: ParsedPaper) -> str:
     return final_path.read_text(encoding="utf-8")
 
 
+@harness_workflow("report")
 def run_analysis(config: RunConfig, parsed: ParsedPaper) -> str:
     workspace = Workspace(config.output_dir)
     with workflow_trace(

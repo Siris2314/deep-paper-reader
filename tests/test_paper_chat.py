@@ -120,16 +120,21 @@ def test_graph_persists_a_chat_turn_without_external_models(tmp_path, monkeypatc
     workspace = Workspace(tmp_path / "workspace")
 
     def fake_specialist(parsed, workspace, specialist, question, history, evidence, memory):
-        citation = next(item.id for item in evidence if item.source == "paper")
+        passage = next(item for item in evidence if item.source == "paper" and item.kind == "page")
+        citation = passage.id
+        claim = passage.text.splitlines()[-1].split(".")[0]
         return SpecialistOutput(
             specialist=specialist,
-            answer=f"The paper uses calibrated softmax for its training objective [{citation}].",
+            answer=f"{claim} [{citation}].",
             cited_evidence_ids=[citation],
             claims=["The paper uses calibrated softmax."],
             model="fake-model",
         )
 
     monkeypatch.setattr("paper_agent.paper_chat._invoke_specialist", fake_specialist)
+    def no_judge(self, claims):
+        raise AssertionError("Verbatim evidence should not need a model call")
+    monkeypatch.setattr("paper_agent.paper_chat.PaperChatWorkflow._judge_claims", no_judge)
     result = run_paper_chat(
         sample_paper(),
         workspace,

@@ -425,6 +425,28 @@ def invoke_observed(
     metadata: dict[str, object] | None = None,
     as_type: ObservationType = "generation",
 ) -> Any:
+    from paper_agent.harness import invoke_with_harness
+
+    return invoke_with_harness(
+        runnable,
+        payload,
+        lambda target, value: _invoke_observed(
+            target, value, name=name, model=model, metadata=metadata, as_type=as_type
+        ),
+        name=name,
+        model=model,
+    )
+
+
+def _invoke_observed(
+    runnable: Any,
+    payload: Any,
+    *,
+    name: str,
+    model: str | None = None,
+    metadata: dict[str, object] | None = None,
+    as_type: ObservationType = "generation",
+) -> Any:
     runtime = _runtime()
     if runtime is None:
         return runnable.invoke(payload)

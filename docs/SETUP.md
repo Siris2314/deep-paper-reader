@@ -233,6 +233,11 @@ python -m paper_agent.cli hardware --profile low-vram --apply
 
 Keep `PAPER_CHAT_MAX_PARALLEL=1`. Use `scripts/benchmark_ollama.py --cold` to compare load and generation time.
 
+The shared [agent harness](HARNESS.md) also limits concurrent local-model calls across
+chat, math, and reports. Its budgets and diagnostics are described there; use
+`python scripts/benchmark_harness.py` to compare agent framework prompt overhead offline.
+See [data source recommendations](DATA_SOURCES.md) for structured-paper and OCR options.
+
 ### Tavily enrichment stops
 
 Verify `TAVILY_API_KEY`, restart the reader after editing `.env`, and inspect the error shown in the concept popover. Tavily queries are intentionally capped below provider length limits.

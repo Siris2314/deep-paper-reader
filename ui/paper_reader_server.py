@@ -25,6 +25,7 @@ if str(SRC) not in sys.path:
 load_dotenv(REPO_ROOT / ".env")
 
 from paper_agent.concepts import get_or_create_concept_card, save_concept_index  # noqa: E402
+from paper_agent.arxiv_source import ingest_source, load_source  # noqa: E402
 from paper_agent.concept_enrichment import enrich_concept_card  # noqa: E402
 from paper_agent.context_diagnostics import context_diagnostics_payload  # noqa: E402
 from paper_agent.judge_memory import record_math_judge_feedback  # noqa: E402
@@ -65,7 +66,7 @@ from paper_agent.workspace import Workspace  # noqa: E402
 UPLOAD_ROOT = REPO_ROOT / "uploaded_papers"
 REPORT_ROOT = REPO_ROOT / "paper_reports"
 DEFAULT_PORT = int(os.getenv("PAPER_READER_PORT", "8503"))
-BUILD_LABEL = "reader-build-2026-07-28-aligned-judge-v32"
+BUILD_LABEL = "reader-build-2026-09-27-evidence-harness-v33"
 ENRICHMENT_JOB_TIMEOUT = max(30.0, min(float(os.getenv("ENRICHMENT_JOB_TIMEOUT", "240")), 600.0))
 ENRICHMENT_JOBS: dict[str, dict[str, object]] = {}
 ENRICHMENT_LOCK = threading.RLock()
@@ -587,6 +588,19 @@ def render_page_png(workspace: Workspace, parsed: ParsedPaper, page_number: int)
     return content
 
 
+def render_equation_crop(parsed: ParsedPaper, page_number: int, region_id: str) -> bytes:
+    layout = page_layout_payload(parsed, [], page_number)
+    region = next((item for item in layout["mathRegions"] if item["id"] == region_id), None)
+    if region is None:
+        raise ValueError("Math region not found on this page.")
+    with fitz.open(source_pdf_path(parsed)) as doc:
+        page = doc[page_number - 1]
+        clip = (fitz.Rect(region["layout_evidence"]["bbox"]) + (-8, -8, 8, 8)) & page.rect
+        if clip.is_empty or clip.is_infinite:
+            raise ValueError("Invalid equation crop.")
+        return page.get_pixmap(matrix=fitz.Matrix(2, 2), clip=clip, alpha=False).tobytes("png")
+
+
 def remember_highlight(
     workspace: Workspace,
     parsed: ParsedPaper,
@@ -624,6 +638,7 @@ def state_payload(workspace: Workspace, parsed: ParsedPaper) -> dict[str, object
     terms = load_significant_terms(parsed, workspace)
     return {
         "workspace": str(workspace.root),
+        "arxivSource": {key: value for key, value in load_source(parsed, workspace).items() if key != "items"},
         "metadata": parsed.metadata.model_dump(),
         "pages": pdf_page_sizes(parsed),
         "sections": section_navigation(parsed),
@@ -987,7 +1002,16 @@ APP_HTML = r"""<!doctype html>
       gap: 8px;
       max-height: calc(100vh - 40px);
     }
-    .side-tabs { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 7px; background: #e9edf3; padding: 3px; }
+    .side-tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; border: 1px solid var(--line); border-radius: 7px; background: #e9edf3; padding: 3px; }
+    .evidence-panel { overflow: auto; padding: 18px; background: white; border: 1px solid var(--line); border-radius: 7px; max-height: calc(100vh - 100px); overflow-wrap: anywhere; }
+    .evidence-panel img { width: 100%; height: auto; border: 1px solid var(--line); }
+    .evidence-panel blockquote { margin: 12px 0; padding: 10px; border-left: 3px solid #6084b8; white-space: pre-wrap; background: #f4f7fc; }
+    .evidence-panel h4 { margin: 18px 0 8px; }
+    .evidence-panel .symbol-table { display: block; overflow-x: auto; }
+    .evidence-panel details { margin: 14px 0; }
+    .claim-check { margin: 10px 0; padding: 8px; border-left: 3px solid #ba8525; }
+    .claim-check.supported { border-color: #47836b; }
+    .claim-check.contradicted { border-color: #b64b4b; }
     .side-tab { border: 0; background: transparent; padding: 8px; color: #526178; }
     .side-tab.active { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(15, 23, 42, .12); }
     .side-panel { min-height: 0; }
@@ -1461,7 +1485,7 @@ APP_HTML = r"""<!doctype html>
         <div class="app-heading">
           <h1 id="paperTitle">Paper workspace</h1>
           <div id="paperMeta" class="paper-meta">Open a PDF to begin.</div>
-          <span id="buildLabel" class="build-label">reader-build-2026-07-28-aligned-judge-v32</span>
+          <span id="buildLabel" class="build-label">reader-build-2026-09-27-evidence-harness-v33</span>
         </div>
         <div id="stats" class="stat-grid"></div>
       </header>
@@ -1471,6 +1495,7 @@ APP_HTML = r"""<!doctype html>
           <div class="side-tabs" role="tablist" aria-label="Paper tools">
             <button id="chatTab" class="side-tab active" role="tab" aria-selected="true" data-side-panel="chat">Chat</button>
             <button id="inspectTab" class="side-tab" role="tab" aria-selected="false" data-side-panel="inspect">Inspect</button>
+            <button id="evidenceTab" class="side-tab" role="tab" aria-selected="false" data-side-panel="evidence">Evidence</button>
           </div>
           <div id="chatPanel" class="side-panel chat-panel" role="tabpanel">
             <div class="chat-header">
@@ -1494,6 +1519,12 @@ APP_HTML = r"""<!doctype html>
             </div>
           </div>
           <div id="inspectPanel" class="side-panel inspect-panel" role="tabpanel" hidden>
+            <div class="card">
+              <h2>Structured paper source</h2>
+              <p id="arxivStatus" class="subtle">No source loaded.</p>
+              <button id="loadArxivBtn">Load matching arXiv HTML</button>
+              <p class="subtle">Fetches the exact version identified in this PDF. No paper content is uploaded.</p>
+            </div>
             <div class="card">
               <h2>Sections</h2>
               <div id="sectionList" class="section-list"></div>
@@ -1521,6 +1552,9 @@ APP_HTML = r"""<!doctype html>
               <div id="skillList" class="subtle" style="margin-top:10px"></div>
             </details>
           </div>
+          <div id="evidencePanel" class="side-panel evidence-panel" role="tabpanel" aria-label="Equation and evidence inspector" hidden>
+            <p>Select an equation or a chat citation to inspect its source.</p>
+          </div>
         </section>
       </div>
     </main>
@@ -1545,7 +1579,7 @@ APP_HTML = r"""<!doctype html>
     </div>
   </div>
   <script>
-    const BUILD_LABEL = 'reader-build-2026-07-28-aligned-judge-v32';
+    const BUILD_LABEL = 'reader-build-2026-09-27-evidence-harness-v33';
     const state = { workspace: null, pages: [], sections: [], terms: [], termMap: new Map(), metadata: null, pageLayouts: new Map(), selectionPage: null, mathExplanations: new Map(), mathPending: new Set(), threadId: null, chatMode: 'fast', chatBusy: false, lastQuestion: '', chatQuestions: new Map() };
     const autoWebAttempted = new Set();
     let mathHoverTimer = null;
@@ -1564,13 +1598,31 @@ APP_HTML = r"""<!doctype html>
     }
 
     function setSidePanel(name) {
-      const chat = name === 'chat';
-      $('chatPanel').hidden = !chat;
-      $('inspectPanel').hidden = chat;
-      $('chatTab').classList.toggle('active', chat);
-      $('inspectTab').classList.toggle('active', !chat);
-      $('chatTab').setAttribute('aria-selected', String(chat));
-      $('inspectTab').setAttribute('aria-selected', String(!chat));
+      for (const panel of ['chat', 'inspect', 'evidence']) {
+        $(`${panel}Panel`).hidden = panel !== name;
+        $(`${panel}Tab`).classList.toggle('active', panel === name);
+        $(`${panel}Tab`).setAttribute('aria-selected', String(panel === name));
+      }
+    }
+
+    const citationEvidence = new Map();
+    function safeSourceUrl(value) {
+      try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) ? url.href : ''; }
+      catch { return ''; }
+    }
+    function openEvidence(key) {
+      const item = citationEvidence.get(key);
+      if (!item) return;
+      const panel = $('evidencePanel');
+      delete panel.dataset.mathKey;
+      const url = safeSourceUrl(item.url);
+      panel.innerHTML = `<div class="popover-header"><h3>${escapeHtml(item.label || item.id)}</h3><button data-side-panel="chat">Back to chat</button></div>
+        <p class="subtle">${escapeHtml(item.source === 'web' ? 'External web context' : item.source === 'memory' ? 'User memory — not paper evidence' : item.url ? 'Version-matched paper HTML' : 'Uploaded PDF evidence')} · ${escapeHtml(item.id)}</p>
+        ${item.section ? `<h4>${escapeHtml(item.section)}</h4>` : ''}
+        <blockquote>${escapeHtml(item.excerpt || 'No passage was saved for this citation.')}</blockquote>
+        ${item.page ? `<button data-chat-page="${Number(item.page)}">Go to PDF page ${Number(item.page)}</button>` : ''}
+        ${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ''}`;
+      setSidePanel('evidence');
     }
 
     function formatChatInline(text) {
@@ -1603,12 +1655,11 @@ APP_HTML = r"""<!doctype html>
       }).join('');
     }
 
-    function citationMarkup(citations) {
+    function citationMarkup(citations, messageId) {
       return (citations || []).map(item => {
-        const attrs = item.page
-          ? `data-chat-page="${Number(item.page)}"`
-          : (item.url ? `data-chat-url="${escapeHtml(item.url)}"` : '');
-        return `<button class="citation-button ${item.source === 'web' ? 'web' : ''}" ${attrs} title="${escapeHtml(item.excerpt || item.title || '')}">${escapeHtml(item.label || item.id)}</button>`;
+        const key = `${messageId}:${item.id}`;
+        citationEvidence.set(key, item);
+        return `<button class="citation-button ${item.source === 'web' ? 'web' : ''}" data-evidence-key="${escapeHtml(key)}" title="Inspect cited passage">[${escapeHtml(item.id)}] ${escapeHtml(item.label || '')}</button>`;
       }).join('');
     }
 
@@ -1617,10 +1668,9 @@ APP_HTML = r"""<!doctype html>
         <div class="trace-item"><b>${escapeHtml(item.stage || '')}</b><span>${escapeHtml(item.message || '')} · ${escapeHtml(item.elapsedSeconds ?? 0)}s</span></div>
       `).join('');
       const specialists = route?.specialists || [];
-      const score = verification?.score ?? 0;
       return `
         <details class="chat-trace">
-          <summary>${escapeHtml(specialists.join(' + ') || 'general')} · grounding ${escapeHtml(Math.round(Number(score) * 100))}%</summary>
+          <summary>${escapeHtml(specialists.join(' + ') || 'general')} · ${verification?.passed ? 'checks passed' : 'needs review'}</summary>
           <div class="trace-list">${items || '<div>No trace recorded.</div>'}</div>
         </details>`;
     }
@@ -1635,11 +1685,15 @@ APP_HTML = r"""<!doctype html>
         <div class="chat-message assistant" data-message-id="${escapeHtml(messageId)}">
           <div class="chat-bubble">
             <div class="chat-answer">${formatChatMarkdown(message.content || message.answer || '')}</div>
-            ${citations.length ? `<div class="chat-citations">${citationMarkup(citations)}</div>` : ''}
+            ${citations.length ? `<div class="chat-citations">${citationMarkup(citations, messageId)}</div>` : ''}
             <div class="chat-meta">
               ${(route.specialists || []).map(name => `<span class="chat-route">${escapeHtml(name)}</span>`).join('')}
-              <span>${verification.passed ? 'grounded' : 'reviewed'}</span>
+              <span>${verification.passed && verification.claims?.length ? 'Claims supported by cited evidence' : 'Needs review — not fully verified'}</span>
             </div>
+            ${(verification.claims || []).length ? `<details><summary>Claim checks · ${verification.claims.filter(c => c.status === 'supported').length}/${verification.claims.length} supported</summary>
+              ${verification.claims.map(c => `<div class="claim-check ${escapeHtml(c.status)}"><b>${escapeHtml(c.status)}</b>: ${escapeHtml(c.claim)}<p class="subtle">${escapeHtml(c.reason)}</p>${c.quote ? `<blockquote>${escapeHtml(c.quote)}</blockquote>` : ''}${citationMarkup(citations.filter(item => (c.evidence_ids || []).includes(item.id)), messageId)}</div>`).join('')}
+              <p class="subtle">Model-assisted checks can be wrong. Inspect the cited passage.</p></details>` : ''}
+            ${(verification.issues || []).length ? `<p class="subtle">${verification.issues.map(escapeHtml).join(' ')}</p>` : ''}
             ${traceMarkup(message.trace, route, verification)}
             <div class="chat-feedback">
               <button data-chat-rating="helpful" title="Helpful" aria-label="Helpful">+</button>
@@ -1656,6 +1710,7 @@ APP_HTML = r"""<!doctype html>
     }
 
     function renderChatHistory(messages) {
+      citationEvidence.clear();
       state.chatQuestions = new Map();
       let lastQuestion = '';
       const html = (messages || []).map(message => {
@@ -1763,7 +1818,7 @@ APP_HTML = r"""<!doctype html>
     }
 
     async function submitMathJudgeFeedback(rating, dimension='overall', feedback='', remember=true) {
-      const pop = $('popover');
+      const pop = $('evidencePanel');
       const explanation = state.mathExplanations.get(pop.dataset.mathKey);
       if (!explanation) throw new Error('The equation explanation is no longer available.');
       const compactExplanation = {
@@ -1857,6 +1912,10 @@ APP_HTML = r"""<!doctype html>
     }
 
     function renderState(payload) {
+      delete $('evidencePanel').dataset.mathKey;
+      $('evidencePanel').innerHTML = '<p>Select an equation or a chat citation to inspect its source.</p>';
+      citationEvidence.clear();
+      renderSourceStatus(payload.arxivSource || {});
       state.workspace = payload.workspace;
       state.pages = payload.pages || [];
       state.sections = payload.sections || [];
@@ -2459,7 +2518,7 @@ APP_HTML = r"""<!doctype html>
     }
 
     function renderMathPopover(explanation, mathKey) {
-      const pop = $('popover');
+      const pop = $('evidencePanel');
       if (pop.dataset.mathKey !== mathKey) return;
       const parsed = explanation.parse || {};
       const symbols = explanation.symbols || [];
@@ -2488,12 +2547,16 @@ APP_HTML = r"""<!doctype html>
           <div>
             <h3>${explanation.region_kind === 'inline' ? 'Inline math' : 'Equation'} · page ${escapeHtml(explanation.page)}</h3>
             <div class="tag-row">
-              <span class="tag">math-walkthrough</span><span class="tag">SymPy</span><span class="tag">paper-math-agent</span>
+              <span class="tag">${escapeHtml(explanation.explanation_confidence || 'low')} explanation confidence</span>
             </div>
           </div>
-          <button id="closePop">Close</button>
+          <button id="closeMath">Back to chat</button>
         </div>
-        <h4>Equation</h4>
+        <h4>Original PDF notation</h4>
+        <img alt="Original equation crop from page ${Number(explanation.page)}" src="${escapeHtml(pop.dataset.cropUrl || '')}" />
+        <button data-chat-page="${Number(explanation.page)}">Go to PDF page ${Number(explanation.page)}</button>
+        ${transcriptionWarnings.length ? `<p class="subtle">Notation needs review: ${transcriptionWarnings.map(escapeHtml).join(' ')}</p>` : ''}
+        <h4>Reconstructed equation</h4>
         ${displayLatex
           ? `<div class="math-rendered" data-page="${escapeHtml(explanation.page)}">\\[${escapeHtml(displayLatex)}\\]</div>`
           : `<div class="math-render-fallback">A reliable equation preview could not be produced for page ${escapeHtml(explanation.page)}. The original notation remains visible in the paper; extraction details are available below.</div>`}
@@ -2501,6 +2564,7 @@ APP_HTML = r"""<!doctype html>
         <p class="role-copy">${escapeHtml(humanizeLabel(explanation.role))}</p>
         <h4>Plain English</h4>
         <p>${formatInline(explanation.plain_english || '')}</p>
+        <details><summary>Step by step and symbols</summary>
         <h4>Step by step</h4>
         <ol class="evidence">${steps.map(item => cleanListItem(item)).filter(Boolean).map(item => `<li>${formatInline(item)}</li>`).join('') || '<li>No steps were produced.</li>'}</ol>
         <h4>Symbols</h4>
@@ -2508,8 +2572,10 @@ APP_HTML = r"""<!doctype html>
           <table class="symbol-table"><thead><tr><th>Symbol</th><th>Meaning</th><th>Basis</th></tr></thead><tbody>
           ${symbols.map(item => `<tr><td><span class="math-symbol inline-math-source" data-latex="${escapeHtml(item.symbol)}">\\(${escapeHtml(item.symbol)}\\)</span></td><td>${formatInline(item.meaning)}</td><td><span class="symbol-source">${escapeHtml(humanizeLabel(item.source, 'Unresolved'))}</span></td></tr>`).join('')}
           </tbody></table>` : '<p class="subtle">No symbols were resolved.</p>'}
+        </details>
         <h4>Intuition</h4>
         <p>${formatInline(explanation.intuition || 'No intuition was produced.')}</p>
+        <details><summary>Derivation, shapes and implementation</summary>
         <h4>Dimensions and shapes</h4>
         <p>${formatTechnicalInline(explanation.dimensional_analysis || 'Dimensions were not resolved.')}</p>
         <h4>Implementation view</h4>
@@ -2518,10 +2584,12 @@ APP_HTML = r"""<!doctype html>
         <p>${formatTechnicalInline(derivationNotes || 'The paper does not provide a derivation for this equation.')}</p>
         <h4>Toy example</h4>
         <p>${formatTechnicalInline(toyExample || 'No faithful toy example was produced.')}</p>
+        </details>
         <h4>How it fits the paper</h4>
         <p>${formatInline(explanation.context_fit || '')}</p>
         <h4>Paper evidence</h4>
         <ul class="evidence paper-evidence">${paperEvidence.map(item => cleanPaperEvidence(item)).filter(Boolean).map(item => `<li>${formatTechnicalInline(item)}</li>`).join('') || '<li>No supporting paper evidence was produced.</li>'}</ul>
+        ${(explanation.structured_sources || []).length ? `<details><summary>Related version-matched HTML passages</summary><p class="subtle">Related context, not a verified match to this equation.</p>${explanation.structured_sources.map(item => `<blockquote>${escapeHtml(item.text)}</blockquote>${safeSourceUrl(item.url) ? `<a href="${escapeHtml(safeSourceUrl(item.url))}" target="_blank" rel="noopener noreferrer">arXiv ${escapeHtml(item.version)} · ${escapeHtml(item.section)}</a>` : ''}`).join('')}</details>` : ''}
         ${assumptions.length ? `
           <h4>Assumptions or missing details</h4>
           <ul class="evidence">${assumptions.map(item => cleanListItem(item)).filter(Boolean).map(item => `<li>${formatInline(item)}</li>`).join('')}</ul>
@@ -2594,10 +2662,7 @@ APP_HTML = r"""<!doctype html>
           </div>
         </details>
       `;
-      $('closePop').onclick = () => {
-        pop.classList.remove('open');
-        delete pop.dataset.mathKey;
-      };
+      $('closeMath').onclick = () => setSidePanel('chat');
       if (displayLatex) typesetMath(pop);
     }
 
@@ -2606,23 +2671,21 @@ APP_HTML = r"""<!doctype html>
       const region = layout?.mathRegions?.find(item => item.id === regionId);
       if (!region) return;
       const mathKey = `${state.workspace}::${page}::${regionId}`;
-      const pop = $('popover');
-      delete pop.dataset.termKey;
+      const pop = $('evidencePanel');
+      pop.dataset.cropUrl = `/api/equation-crop?workspace=${encodeURIComponent(state.workspace)}&page=${encodeURIComponent(page)}&region=${encodeURIComponent(regionId)}`;
       pop.dataset.mathKey = mathKey;
-      pop.classList.add('open');
+      setSidePanel('evidence');
       if (state.mathExplanations.has(mathKey)) {
         renderMathPopover(state.mathExplanations.get(mathKey), mathKey);
         return;
       }
       pop.innerHTML = `
-        <div class="popover-header"><h3>${region.kind === 'inline' ? 'Inline math' : 'Equation'} · page ${escapeHtml(page)}</h3><button id="closePop">Close</button></div>
+        <div class="popover-header"><h3>${region.kind === 'inline' ? 'Inline math' : 'Equation'} · page ${escapeHtml(page)}</h3><button id="closeMath">Back to chat</button></div>
+        <img alt="Original equation crop from page ${Number(page)}" src="${escapeHtml(pop.dataset.cropUrl)}" />
         <div class="math-render-fallback">Reading the original equation and reconstructing its notation...</div>
-        <p id="mathStatus" class="enrich-status">Preparing SymPy and paper-agent analysis...</p>
+        <p id="mathStatus" class="enrich-status">Reading notation and nearby paper evidence...</p>
       `;
-      $('closePop').onclick = () => {
-        pop.classList.remove('open');
-        delete pop.dataset.mathKey;
-      };
+      $('closeMath').onclick = () => setSidePanel('chat');
       if (state.mathPending.has(mathKey)) return;
       state.mathPending.add(mathKey);
       try {
@@ -2745,6 +2808,8 @@ APP_HTML = r"""<!doctype html>
     }
 
     document.addEventListener('click', (event) => {
+      const evidenceButton = event.target.closest('[data-evidence-key]');
+      if (evidenceButton) { openEvidence(evidenceButton.dataset.evidenceKey); return; }
       const sidePanel = event.target.closest('[data-side-panel]');
       if (sidePanel) {
         setSidePanel(sidePanel.dataset.sidePanel);
@@ -2763,7 +2828,8 @@ APP_HTML = r"""<!doctype html>
       }
       const chatUrl = event.target.closest('[data-chat-url]');
       if (chatUrl) {
-        window.open(chatUrl.dataset.chatUrl, '_blank', 'noopener,noreferrer');
+        const url = safeSourceUrl(chatUrl.dataset.chatUrl);
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
         return;
       }
       const ratingButton = event.target.closest('[data-chat-rating]');
@@ -2858,14 +2924,6 @@ APP_HTML = r"""<!doctype html>
         document.getElementById(`pdf-page-${pageTarget.dataset.pageTarget}`)?.scrollIntoView({behavior: 'smooth', block: 'start'});
       }
     });
-    document.addEventListener('pointerover', (event) => {
-      const mathTarget = event.target.closest('.math-hotspot');
-      if (!mathTarget) return;
-      clearTimeout(mathHoverTimer);
-      mathHoverTimer = setTimeout(() => {
-        openMath(Number(mathTarget.dataset.mathPage), mathTarget.dataset.mathRegion);
-      }, 700);
-    });
     document.addEventListener('pointerout', (event) => {
       if (!event.target.closest('.math-hotspot')) return;
       clearTimeout(mathHoverTimer);
@@ -2883,6 +2941,24 @@ APP_HTML = r"""<!doctype html>
         : 'Choose a PDF, then upload and parse.';
     });
     $('uploadBtn').addEventListener('click', uploadPdf);
+    function renderSourceStatus(source) {
+      $('arxivStatus').textContent = `${source.version || 'Exact version not identified'} · ${String(source.status || 'not_loaded').replaceAll('_', ' ')}${source.error ? ': ' + source.error : ''}`;
+      $('loadArxivBtn').disabled = !source.version || source.status === 'ready';
+    }
+    $('loadArxivBtn').addEventListener('click', async () => {
+      const workspace = state.workspace;
+      if (!workspace) return;
+      $('loadArxivBtn').disabled = true;
+      $('arxivStatus').textContent = 'Fetching the exact paper version…';
+      try {
+        const res = await fetch(`/api/arxiv-source?workspace=${encodeURIComponent(workspace)}`, {method: 'POST'});
+        if (!res.ok) throw new Error(await res.text());
+        const source = await res.json();
+        if (state.workspace === workspace) { renderSourceStatus(source); state.mathExplanations.clear(); }
+      } catch (err) {
+        if (state.workspace === workspace) { $('arxivStatus').textContent = err.message; $('loadArxivBtn').disabled = false; }
+      }
+    });
     $('sendChatBtn').addEventListener('click', sendChat);
     $('chatInput').addEventListener('keydown', event => {
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -3008,6 +3084,11 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                 terms = load_significant_terms(parsed, workspace, max_terms=120)
                 self._json(page_layout_payload(parsed, terms, page_number))
                 return
+            if parsed_url.path == "/api/equation-crop":
+                query = parse_qs(parsed_url.query)
+                workspace, parsed = load_workspace(query.get("workspace", [None])[0])
+                self._send(HTTPStatus.OK, render_equation_crop(parsed, int(query.get("page", ["0"])[0]), query.get("region", [""])[0]), "image/png")
+                return
             if parsed_url.path == "/api/page-image":
                 query = parse_qs(parsed_url.query)
                 workspace_arg = query.get("workspace", [None])[0]
@@ -3050,6 +3131,12 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed_url = urlparse(self.path)
         try:
+            if parsed_url.path == "/api/arxiv-source":
+                query = parse_qs(parsed_url.query)
+                workspace, parsed = load_workspace(query.get("workspace", [None])[0])
+                source = ingest_source(parsed, workspace)
+                self._json({key: value for key, value in source.items() if key != "items"})
+                return
             if parsed_url.path == "/api/enrich-term":
                 query = parse_qs(parsed_url.query)
                 term = query.get("term", [""])[0].strip()

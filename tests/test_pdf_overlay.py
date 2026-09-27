@@ -3,7 +3,7 @@ import fitz
 from paper_agent.math_regions import _geometry_latex
 from paper_agent.parser import parse_paper
 from paper_agent.term_highlighter import SignificantTerm
-from ui.paper_reader_server import page_layout_payload
+from ui.paper_reader_server import page_layout_payload, render_equation_crop
 
 
 def test_pdf_layout_uses_original_page_coordinates(tmp_path, sample_pdf):
@@ -72,6 +72,11 @@ def test_pdf_layout_exposes_hoverable_math_regions(tmp_path, sample_pdf):
     display = next(region for region in layout["mathRegions"] if region["kind"] == "display")
     assert display["rects"]
     assert "where" in display["context"].lower()
+    crop = render_equation_crop(parsed, 1, display["id"])
+    assert crop.startswith(b"\x89PNG")
+    pixmap = fitz.Pixmap(crop)
+    assert 0 < pixmap.width <= layout["width"] * 2
+    assert 0 < pixmap.height <= layout["height"] * 2
 
 
 def test_pdf_layout_rejects_prose_with_incidental_math_characters(tmp_path):

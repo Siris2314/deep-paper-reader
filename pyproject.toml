@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "deepagents>=0.2.0",
+    "langchain>=1.0.0",
     "langchain-core>=1.0.0",
     "langchain-openai>=1.0.0",
     "langchain-ollama>=1.0.0",
