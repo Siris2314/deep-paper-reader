@@ -26,7 +26,11 @@ load_dotenv(REPO_ROOT / ".env")
 
 from paper_agent.concepts import get_or_create_concept_card, save_concept_index  # noqa: E402
 from paper_agent.arxiv_source import ingest_source, load_source  # noqa: E402
-from paper_agent.concept_enrichment import enrich_concept_card  # noqa: E402
+from paper_agent.scholarly_metadata import load_metadata, refresh_metadata  # noqa: E402
+from paper_agent.concept_enrichment import (  # noqa: E402
+    enrich_concept_card,
+    normalize_concept_formatting,
+)
 from paper_agent.context_diagnostics import context_diagnostics_payload  # noqa: E402
 from paper_agent.judge_memory import record_math_judge_feedback  # noqa: E402
 from paper_agent.math_agent import explain_equation  # noqa: E402
@@ -60,13 +64,20 @@ from paper_agent.term_highlighter import (  # noqa: E402
     save_significant_terms,
     term_pattern,
 )
+from paper_agent.term_feedback import (  # noqa: E402
+    FEEDBACK_RELATIVE_PATH,
+    load_term_feedback,
+    record_term_feedback,
+    relevance_key,
+)
 from paper_agent.term_memory import normalize_term, remember_term  # noqa: E402
+from paper_agent.term_relevance_eval import evaluate_workspace_feedback  # noqa: E402
 from paper_agent.workspace import Workspace  # noqa: E402
 
 UPLOAD_ROOT = REPO_ROOT / "uploaded_papers"
 REPORT_ROOT = REPO_ROOT / "paper_reports"
 DEFAULT_PORT = int(os.getenv("PAPER_READER_PORT", "8503"))
-BUILD_LABEL = "reader-build-2026-09-27-evidence-harness-v33"
+BUILD_LABEL = "reader-build-2026-10-04-term-feedback-v36"
 ENRICHMENT_JOB_TIMEOUT = max(30.0, min(float(os.getenv("ENRICHMENT_JOB_TIMEOUT", "240")), 600.0))
 ENRICHMENT_JOBS: dict[str, dict[str, object]] = {}
 ENRICHMENT_LOCK = threading.RLock()
@@ -380,7 +391,7 @@ def parse_uploaded_pdf(filename: str, data: bytes) -> tuple[Workspace, ParsedPap
         metadata={"pdfBytes": len(data), "pdfHash": short_hash(data)},
         as_type="chain",
     ) as trace:
-        workspace.reset()
+        reset_uploaded_workspace(workspace)
         parsed = parse_paper(pdf_path, workspace.root)
         save_concept_index(parsed, workspace)
         terms = save_significant_terms(parsed, workspace)
@@ -397,6 +408,15 @@ def parse_uploaded_pdf(filename: str, data: bytes) -> tuple[Workspace, ParsedPap
         trace.score("parse_succeeded", 1.0, data_type="BOOLEAN")
         trace.score("parse_pages", float(parsed.metadata.page_count))
         return workspace, parsed
+
+
+def reset_uploaded_workspace(workspace: Workspace) -> None:
+    """Reset generated UI artifacts while retaining labels for this PDF-hash workspace."""
+
+    feedback = load_term_feedback(workspace)
+    workspace.reset()
+    if feedback.get("labels"):
+        workspace.write_json(FEEDBACK_RELATIVE_PATH, feedback)
 
 
 def load_workspace(workspace_arg: str | None = None) -> tuple[Workspace, ParsedPaper]:
@@ -485,6 +505,12 @@ def _automatic_margin_annotation(
     return edge_header or (side_margin and vertical_text)
 
 
+MAX_PAGE_HIGHLIGHT_TERMS = 12
+MAX_PAGE_HIGHLIGHT_RECTS = 18
+MAX_OCCURRENCES_PER_TERM = 2
+MIN_AUTOMATIC_HIGHLIGHT_SCORE = 8.0
+
+
 def page_layout_payload(
     parsed: ParsedPaper, terms: list[SignificantTerm], page_number: int
 ) -> dict[str, object]:
@@ -517,16 +543,32 @@ def page_layout_payload(
 
     highlights: list[dict[str, object]] = []
     claimed_words: set[int] = set()
+    page_terms: set[str] = set()
+    term_occurrences: dict[str, int] = {}
     ordered_terms = sorted(
         terms,
-        key=lambda item: (item.learned, len(_tokens(item.term)), len(item.term), item.score),
+        # Global relevance wins before phrase length. The previous length-first ordering let a
+        # low-quality sentence fragment claim words that belonged to a core paper concept.
+        key=lambda item: (item.learned, item.score, len(_tokens(item.term)), len(item.term)),
         reverse=True,
     )
     for term in ordered_terms:
+        if len(highlights) >= MAX_PAGE_HIGHLIGHT_RECTS:
+            break
+        if not term.learned and term.score < MIN_AUTOMATIC_HIGHLIGHT_SCORE:
+            continue
         wanted = _tokens(term.term)
         if not wanted:
             continue
+        term_key = term.term.casefold()
+        if term_key not in page_terms and len(page_terms) >= MAX_PAGE_HIGHLIGHT_TERMS:
+            continue
         for start in range(0, len(stream) - len(wanted) + 1):
+            occurrence_limit = 3 if term.learned else MAX_OCCURRENCES_PER_TERM
+            if term_occurrences.get(term_key, 0) >= occurrence_limit:
+                break
+            if len(highlights) >= MAX_PAGE_HIGHLIGHT_RECTS:
+                break
             if [token for token, _ in stream[start : start + len(wanted)]] != wanted:
                 continue
             word_ids = list(
@@ -539,11 +581,15 @@ def page_layout_payload(
                 matched_words, page_width, page_height
             ):
                 continue
-            claimed_words.update(word_ids)
             grouped: dict[tuple[int, int], list[dict[str, object]]] = {}
             for index in word_ids:
                 word = words[index]
                 grouped.setdefault((int(word["block"]), int(word["line"])), []).append(word)
+            if len(highlights) + len(grouped) > MAX_PAGE_HIGHLIGHT_RECTS:
+                continue
+            claimed_words.update(word_ids)
+            page_terms.add(term_key)
+            term_occurrences[term_key] = term_occurrences.get(term_key, 0) + 1
             for line_words in grouped.values():
                 x0 = min(float(word["x"]) for word in line_words)
                 y0 = min(float(word["y"]) for word in line_words)
@@ -613,11 +659,25 @@ def remember_highlight(
         raise ValueError(
             "That phrase was not found in the parsed paper text. Select or enter it exactly."
         )
+    current_terms = load_significant_terms(parsed, workspace)
+    signal = next(
+        (item for item in current_terms if relevance_key(item.term) == relevance_key(clean_term)),
+        None,
+    )
     record = remember_term(
         clean_term,
         category,
         paper_title=parsed.metadata.title_guess,
         source_pdf=parsed.metadata.source_pdf,
+        page=page,
+    )
+    record_term_feedback(
+        workspace,
+        clean_term,
+        "relevant",
+        category=category,
+        score=signal.score if signal else None,
+        vocabulary_source=signal.vocabulary_source if signal else "user_selection",
         page=page,
     )
     workspace.write_json(
@@ -634,15 +694,48 @@ def remember_highlight(
     return {"ok": True, "memory": record, "state": state_payload(workspace, parsed)}
 
 
+def suppress_highlight(
+    workspace: Workspace,
+    parsed: ParsedPaper,
+    term: str,
+    page: int | None,
+) -> dict[str, object]:
+    clean_term = normalize_term(term)
+    if not re.search(term_pattern(clean_term), parsed.full_text, re.I):
+        raise ValueError("That phrase was not found in the parsed paper text.")
+    current_terms = load_significant_terms(parsed, workspace)
+    signal = next(
+        (item for item in current_terms if relevance_key(item.term) == relevance_key(clean_term)),
+        None,
+    )
+    if signal is None:
+        raise ValueError("Only a currently proposed highlight can be marked irrelevant.")
+    record = record_term_feedback(
+        workspace,
+        signal.term,
+        "irrelevant",
+        category=signal.category,
+        score=signal.score,
+        vocabulary_source=signal.vocabulary_source,
+        page=page,
+    )
+    save_significant_terms(parsed, workspace, max_terms=160)
+    return {"ok": True, "feedback": record, "state": state_payload(workspace, parsed)}
+
+
 def state_payload(workspace: Workspace, parsed: ParsedPaper) -> dict[str, object]:
     terms = load_significant_terms(parsed, workspace)
     return {
         "workspace": str(workspace.root),
-        "arxivSource": {key: value for key, value in load_source(parsed, workspace).items() if key != "items"},
+        "arxivSource": {
+            key: value for key, value in load_source(parsed, workspace).items() if key != "items"
+        },
+        "scholarlyMetadata": load_metadata(parsed, workspace),
         "metadata": parsed.metadata.model_dump(),
         "pages": pdf_page_sizes(parsed),
         "sections": section_navigation(parsed),
         "terms": [asdict(term) for term in terms],
+        "termFeedback": evaluate_workspace_feedback(workspace, terms),
         "skills": skill_manifest(),
         "equationCount": len(parsed.equation_cards),
         "figureCount": len(parsed.figure_cards),
@@ -678,9 +771,12 @@ def term_payload(workspace: Workspace, parsed: ParsedPaper, term: str) -> dict[s
             + (" Inspect its figure or table." if visuals["figures"] or visuals["tables"] else "")
         )
     }
+    card_payload = asdict(card)
+    for field in ("paper_specific_meaning", "general_explanation", "why_it_matters_here"):
+        card_payload[field] = normalize_concept_formatting(card_payload.get(field))
     return {
         "term": term,
-        "card": asdict(card),
+        "card": card_payload,
         "significantTerm": asdict(sig) if sig else None,
         "equations": equations,
         "visuals": visuals,
@@ -706,12 +802,15 @@ def enrich_term_with_tavily(
         existing_card.general_explanation_source in {"tavily_research", "tavily_search_answer"}
         and existing_card.why_it_matters_source == "paper_agent"
     ):
+        card_payload = asdict(existing_card)
+        for field in ("paper_specific_meaning", "general_explanation", "why_it_matters_here"):
+            card_payload[field] = normalize_concept_formatting(card_payload.get(field))
         return {
             "ok": True,
             "message": "Loaded cached Tavily research and paper-agent analysis.",
             "sources": existing_card.web_sources,
             "term": term,
-            "card": asdict(existing_card),
+            "card": card_payload,
         }
 
     try:
@@ -748,6 +847,9 @@ def enrich_term_with_tavily(
     workspace.write_json("web/tavily_sources.json", merged)
 
     complete = card.why_it_matters_source == "paper_agent"
+    card_payload = asdict(card)
+    for field in ("paper_specific_meaning", "general_explanation", "why_it_matters_here"):
+        card_payload[field] = normalize_concept_formatting(card_payload.get(field))
     return {
         "ok": complete,
         "message": (
@@ -757,7 +859,7 @@ def enrich_term_with_tavily(
         ),
         "sources": card.web_sources,
         "term": term,
-        "card": asdict(card),
+        "card": card_payload,
     }
 
 
@@ -1485,7 +1587,7 @@ APP_HTML = r"""<!doctype html>
         <div class="app-heading">
           <h1 id="paperTitle">Paper workspace</h1>
           <div id="paperMeta" class="paper-meta">Open a PDF to begin.</div>
-          <span id="buildLabel" class="build-label">reader-build-2026-09-27-evidence-harness-v33</span>
+          <span id="buildLabel" class="build-label">reader-build-2026-10-04-term-feedback-v36</span>
         </div>
         <div id="stats" class="stat-grid"></div>
       </header>
@@ -1526,6 +1628,13 @@ APP_HTML = r"""<!doctype html>
               <p class="subtle">Fetches the exact version identified in this PDF. No paper content is uploaded.</p>
             </div>
             <div class="card">
+              <h2>Scholarly metadata</h2>
+              <p id="metadataStatus" class="subtle">Local identity only.</p>
+              <button id="loadMetadataBtn">Resolve metadata and related work</button>
+              <div id="metadataDetails" class="subtle"></div>
+              <p class="subtle">External records are discovery context, not evidence for claims in the uploaded paper.</p>
+            </div>
+            <div class="card">
               <h2>Sections</h2>
               <div id="sectionList" class="section-list"></div>
             </div>
@@ -1540,7 +1649,8 @@ APP_HTML = r"""<!doctype html>
                   <option value="result">Result</option>
                 </select>
                 <button id="rememberBtn">Remember highlight</button>
-                <div id="memoryStatus" class="subtle">Corrections persist across papers.</div>
+                <button id="suppressBtn">Hide as irrelevant here</button>
+                <div id="memoryStatus" class="subtle">Relevant terms can generalize; exclusions stay with this paper.</div>
               </div>
             </div>
             <div class="card">
@@ -1579,7 +1689,7 @@ APP_HTML = r"""<!doctype html>
     </div>
   </div>
   <script>
-    const BUILD_LABEL = 'reader-build-2026-09-27-evidence-harness-v33';
+    const BUILD_LABEL = 'reader-build-2026-10-04-term-feedback-v36';
     const state = { workspace: null, pages: [], sections: [], terms: [], termMap: new Map(), metadata: null, pageLayouts: new Map(), selectionPage: null, mathExplanations: new Map(), mathPending: new Set(), threadId: null, chatMode: 'fast', chatBusy: false, lastQuestion: '', chatQuestions: new Map() };
     const autoWebAttempted = new Set();
     let mathHoverTimer = null;
@@ -1916,6 +2026,7 @@ APP_HTML = r"""<!doctype html>
       $('evidencePanel').innerHTML = '<p>Select an equation or a chat citation to inspect its source.</p>';
       citationEvidence.clear();
       renderSourceStatus(payload.arxivSource || {});
+      renderMetadataStatus(payload.scholarlyMetadata || {});
       state.workspace = payload.workspace;
       state.pages = payload.pages || [];
       state.sections = payload.sections || [];
@@ -1937,6 +2048,11 @@ APP_HTML = r"""<!doctype html>
         ? 'Tavily ready on term open'
         : 'Tavily key not configured';
       $('tavilyDot').className = `status-dot ${payload.tavilyReady ? 'ready' : 'warn'}`;
+      const termFeedback = payload.termFeedback || {};
+      const labelCount = Number(termFeedback.labeled_terms || 0);
+      $('memoryStatus').textContent = labelCount
+        ? `${labelCount} paper-local label(s) · ${Number(termFeedback.relevant_labels || 0)} relevant · ${Number(termFeedback.irrelevant_labels || 0)} hidden`
+        : 'Relevant terms can generalize; exclusions stay with this paper.';
       $('stats').innerHTML = [
         ['Pages', state.metadata.page_count || state.pages.length || 0],
         ['Terms', state.terms.length],
@@ -2165,6 +2281,7 @@ APP_HTML = r"""<!doctype html>
               ? `Enriched · ${webSources.length} research source(s)`
               : (data.tavilyReady ? 'Running Tavily Research, then the paper agent...' : 'Tavily not configured.')
           }</span>
+          ${sig ? `<div class="popover-actions"><button id="hideTermBtn">Hide as irrelevant in this paper</button></div>` : ''}
         </div>
         <section class="concept-section">
           <div class="concept-section-heading"><h4>In this paper</h4></div>
@@ -2192,6 +2309,7 @@ APP_HTML = r"""<!doctype html>
         <details class="concept-details"><summary>Research sources (${webSources.length})</summary><div id="webSources">${renderSources(webSources)}</div></details>
       `;
       $('closePop').onclick = () => pop.classList.remove('open');
+      if ($('hideTermBtn')) $('hideTermBtn').onclick = () => suppressHighlight(term, state.selectionPage);
       loadLineage(term);
       if (data.tavilyReady && needsEnrichment && !autoWebAttempted.has(autoKey)) {
         autoWebAttempted.add(autoKey);
@@ -2807,6 +2925,35 @@ APP_HTML = r"""<!doctype html>
       }
     }
 
+    async function suppressHighlight(term, page=null) {
+      const clean = cleanSelectedTerm(term);
+      if (!clean) {
+        $('memoryStatus').textContent = 'Select or enter a proposed term first.';
+        return;
+      }
+      $('memoryStatus').textContent = `Hiding ${clean} from this paper...`;
+      $('suppressBtn').disabled = true;
+      if ($('hideTermBtn')) $('hideTermBtn').disabled = true;
+      try {
+        const res = await fetch(`/api/suppress-term?workspace=${encodeURIComponent(state.workspace)}`, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({term: clean, page}),
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const payload = await res.json();
+        $('popover').classList.remove('open');
+        renderState(payload.state);
+        $('manualTerm').value = clean;
+        $('memoryStatus').textContent = `${clean} is hidden for this paper and saved as an evaluation label.`;
+      } catch (err) {
+        $('memoryStatus').textContent = err.message;
+      } finally {
+        $('suppressBtn').disabled = false;
+        if ($('hideTermBtn')) $('hideTermBtn').disabled = false;
+      }
+    }
+
     document.addEventListener('click', (event) => {
       const evidenceButton = event.target.closest('[data-evidence-key]');
       if (evidenceButton) { openEvidence(evidenceButton.dataset.evidenceKey); return; }
@@ -2918,7 +3065,11 @@ APP_HTML = r"""<!doctype html>
         return;
       }
       const target = event.target.closest('[data-term]');
-      if (target) openTerm(target.dataset.term);
+      if (target) {
+        const pageShell = target.closest('.pdf-page-shell');
+        state.selectionPage = pageShell ? Number(pageShell.dataset.page) : null;
+        openTerm(target.dataset.term);
+      }
       const pageTarget = event.target.closest('[data-page-target]');
       if (pageTarget) {
         document.getElementById(`pdf-page-${pageTarget.dataset.pageTarget}`)?.scrollIntoView({behavior: 'smooth', block: 'start'});
@@ -2945,6 +3096,28 @@ APP_HTML = r"""<!doctype html>
       $('arxivStatus').textContent = `${source.version || 'Exact version not identified'} · ${String(source.status || 'not_loaded').replaceAll('_', ' ')}${source.error ? ': ' + source.error : ''}`;
       $('loadArxivBtn').disabled = !source.version || source.status === 'ready';
     }
+    function renderMetadataStatus(metadata) {
+      const identity = metadata.identity || {};
+      const identifier = identity.doi ? `DOI ${identity.doi}` : identity.arxiv_version ? `arXiv ${identity.arxiv_version}` : 'No exact identifier found on page 1';
+      const providers = Object.entries(metadata.providers || {});
+      $('metadataStatus').textContent = `${identifier} · ${String(metadata.status || 'not_loaded').replaceAll('_', ' ')}`;
+      $('loadMetadataBtn').disabled = ['ready', 'partial'].includes(metadata.status) || (!identity.doi && !identity.arxiv_id);
+      const providerMarkup = providers.map(([name, item]) => {
+        const url = safeSourceUrl(item.url || item.id || item.doi || '');
+        const label = `${name.replaceAll('_', ' ')}: ${String(item.status || 'unknown').replaceAll('_', ' ')}`;
+        const related = Array.isArray(item.related_works) ? ` · ${item.related_works.length} related` : '';
+        return `<div>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>` : escapeHtml(label)}${escapeHtml(related)}</div>`;
+      }).join('');
+      const openalex = metadata.providers?.openalex || {};
+      const oaUrl = safeSourceUrl(openalex.open_access?.oa_url || openalex.primary_location?.pdf_url || openalex.primary_location?.landing_page_url || '');
+      const related = Array.isArray(openalex.related_works) ? openalex.related_works : [];
+      const relatedMarkup = related.length ? `<details><summary>Related works · ${related.length}</summary>${related.map(item => {
+        const url = safeSourceUrl(item.id || item.doi || '');
+        const label = `${item.title || 'Untitled work'}${item.year ? ` (${item.year})` : ''}`;
+        return `<div>${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>` : escapeHtml(label)}</div>`;
+      }).join('')}<p class="subtle">Similarity edges support discovery only; inspect each paper before making lineage claims.</p></details>` : '';
+      $('metadataDetails').innerHTML = providerMarkup + (oaUrl ? `<div><a href="${escapeHtml(oaUrl)}" target="_blank" rel="noopener noreferrer">Open-access location</a></div>` : '') + relatedMarkup;
+    }
     $('loadArxivBtn').addEventListener('click', async () => {
       const workspace = state.workspace;
       if (!workspace) return;
@@ -2957,6 +3130,20 @@ APP_HTML = r"""<!doctype html>
         if (state.workspace === workspace) { renderSourceStatus(source); state.mathExplanations.clear(); }
       } catch (err) {
         if (state.workspace === workspace) { $('arxivStatus').textContent = err.message; $('loadArxivBtn').disabled = false; }
+      }
+    });
+    $('loadMetadataBtn').addEventListener('click', async () => {
+      const workspace = state.workspace;
+      if (!workspace) return;
+      $('loadMetadataBtn').disabled = true;
+      $('metadataStatus').textContent = 'Resolving exact-identifier metadata…';
+      try {
+        const res = await fetch(`/api/scholarly-metadata?workspace=${encodeURIComponent(workspace)}`, {method: 'POST'});
+        if (!res.ok) throw new Error(await res.text());
+        const metadata = await res.json();
+        if (state.workspace === workspace) renderMetadataStatus(metadata);
+      } catch (err) {
+        if (state.workspace === workspace) { $('metadataStatus').textContent = err.message; $('loadMetadataBtn').disabled = false; }
       }
     });
     $('sendChatBtn').addEventListener('click', sendChat);
@@ -2986,6 +3173,10 @@ APP_HTML = r"""<!doctype html>
     $('rememberBtn').addEventListener('click', () => rememberHighlight(
       $('manualTerm').value,
       $('manualCategory').value,
+      state.selectionPage,
+    ));
+    $('suppressBtn').addEventListener('click', () => suppressHighlight(
+      $('manualTerm').value,
       state.selectionPage,
     ));
     $('selectionSave').addEventListener('click', () => rememberHighlight(
@@ -3087,7 +3278,13 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
             if parsed_url.path == "/api/equation-crop":
                 query = parse_qs(parsed_url.query)
                 workspace, parsed = load_workspace(query.get("workspace", [None])[0])
-                self._send(HTTPStatus.OK, render_equation_crop(parsed, int(query.get("page", ["0"])[0]), query.get("region", [""])[0]), "image/png")
+                self._send(
+                    HTTPStatus.OK,
+                    render_equation_crop(
+                        parsed, int(query.get("page", ["0"])[0]), query.get("region", [""])[0]
+                    ),
+                    "image/png",
+                )
                 return
             if parsed_url.path == "/api/page-image":
                 query = parse_qs(parsed_url.query)
@@ -3136,6 +3333,11 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                 workspace, parsed = load_workspace(query.get("workspace", [None])[0])
                 source = ingest_source(parsed, workspace)
                 self._json({key: value for key, value in source.items() if key != "items"})
+                return
+            if parsed_url.path == "/api/scholarly-metadata":
+                query = parse_qs(parsed_url.query)
+                workspace, parsed = load_workspace(query.get("workspace", [None])[0])
+                self._json(refresh_metadata(parsed, workspace))
                 return
             if parsed_url.path == "/api/enrich-term":
                 query = parse_qs(parsed_url.query)
@@ -3197,6 +3399,20 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                 page_number = int(page) if page is not None else None
                 workspace, parsed = load_workspace(workspace_arg)
                 self._json(remember_highlight(workspace, parsed, term, category, page_number))
+                return
+            if parsed_url.path == "/api/suppress-term":
+                query = parse_qs(parsed_url.query)
+                workspace_arg = query.get("workspace", [None])[0]
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 16_384:
+                    self._error(HTTPStatus.BAD_REQUEST, "Missing or oversized feedback payload")
+                    return
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                term = str(payload.get("term", ""))
+                page = payload.get("page")
+                page_number = int(page) if page is not None else None
+                workspace, parsed = load_workspace(workspace_arg)
+                self._json(suppress_highlight(workspace, parsed, term, page_number))
                 return
             if parsed_url.path == "/api/chat":
                 query = parse_qs(parsed_url.query)

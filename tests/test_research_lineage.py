@@ -3,6 +3,7 @@ from paper_agent.research_lineage import (
     build_research_lineage,
     citation_contexts,
     parse_bibliography,
+    semantic_scholar_references,
 )
 from paper_agent.schemas import PaperMetadata
 from paper_agent.workspace import Workspace
@@ -95,3 +96,33 @@ def test_wrapped_reference_url_keeps_filename():
     entries = parse_bibliography(parsed)
 
     assert entries[0].url == "https://example.org/files/prior_memory.pdf"
+
+
+def test_external_identity_does_not_trust_arxiv_filename(monkeypatch):
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_ALLOW_UNAUTHENTICATED", "true")
+    monkeypatch.setattr(
+        "paper_agent.research_lineage._semantic_scholar_json",
+        lambda _url: (_ for _ in ()).throw(AssertionError("must not fetch")),
+    )
+
+    status, records = semantic_scholar_references(lineage_paper())
+
+    assert status == "paper_id_unresolved"
+    assert records == []
+
+
+def test_external_identity_uses_first_page_doi(monkeypatch):
+    parsed = lineage_paper()
+    parsed.page_text[1] = "doi:10.1234/sparse-memory\n" + parsed.page_text[1]
+    monkeypatch.setenv("SEMANTIC_SCHOLAR_ALLOW_UNAUTHENTICATED", "true")
+    urls = []
+    monkeypatch.setattr(
+        "paper_agent.research_lineage._semantic_scholar_json",
+        lambda url: urls.append(url) or {"data": []},
+    )
+
+    status, records = semantic_scholar_references(parsed)
+
+    assert status == "ok"
+    assert records == []
+    assert "/paper/DOI:10.1234%2Fsparse-memory/references" in urls[0]

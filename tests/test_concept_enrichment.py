@@ -4,6 +4,7 @@ from paper_agent.concept_enrichment import (
     TavilyTermResearch,
     _tavily_http,
     enrich_concept_card,
+    normalize_concept_formatting,
     run_tavily_term_research,
     synthesize_why_it_matters,
 )
@@ -85,6 +86,32 @@ def test_tavily_research_content_becomes_general_explanation():
     assert research.source_type == "tavily_research"
     assert research.model == "mini"
     assert research.sources[0]["url"] == "https://example.com/cache"
+
+
+def test_concept_formatting_repairs_raw_latex_without_corrupting_nabla():
+    raw = (
+        r"The parameters \theta are updated with a cross-entropy loss \n"
+        r"\mathcal{L}_{\text{SFT}} = -\sum_{t=1}^T \log p_\theta(y_t \mid x, y_{<t}), "
+        r"so each step follows \theta \leftarrow \theta - \eta \nabla_\theta "
+        r"\mathcal{L}_{\text{SFT}}."
+    )
+
+    result = normalize_concept_formatting(raw)
+
+    assert r"\n\mathcal" not in result
+    assert r"$\theta$ are updated" in result
+    assert r"$\mathcal{L}_{\text{SFT}} = -\sum_{t=1}^T" in result
+    assert r"$\theta \leftarrow \theta - \eta \nabla_\theta" in result
+    assert r"\nabla" in result
+
+
+def test_concept_formatting_preserves_existing_math_and_repairs_display_delimiters():
+    result = normalize_concept_formatting(
+        r"Already formatted $QK^T$ and display \[x = \operatorname{softmax}(z)\]."
+    )
+
+    assert result.count("$QK^T$") == 1
+    assert "$x = \\operatorname{softmax}(z)$" in result
 
 
 def test_search_fallback_uses_a_query_below_tavily_limit():

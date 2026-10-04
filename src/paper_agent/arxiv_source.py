@@ -41,9 +41,13 @@ def fetch_html(url: str) -> str:
     with _LOCK:
         time.sleep(max(0.0, 3.0 - (time.monotonic() - _LAST_REQUEST)))
         _LAST_REQUEST = time.monotonic()
-        request = Request(url, headers={"User-Agent": "DeepPaperReader/0.1 (structured-paper-reader)"})
+        request = Request(
+            url, headers={"User-Agent": "DeepPaperReader/0.1 (structured-paper-reader)"}
+        )
         with build_opener(_NoRedirect()).open(request, timeout=15) as response:
-            if response.geturl() != url or "text/html" not in response.headers.get("Content-Type", ""):
+            if response.geturl() != url or "text/html" not in response.headers.get(
+                "Content-Type", ""
+            ):
                 raise ValueError("Unexpected arXiv response URL or content type.")
             content = response.read(MAX_BYTES + 1)
     if len(content) > MAX_BYTES:
@@ -66,19 +70,25 @@ class ArticleParser(HTMLParser):
         attrs = dict(attrs)
         classes = attrs.get("class", "").split()
         if tag == "a":
-            match = re.fullmatch(r"(?:https://arxiv.org)?/pdf/(" + ARXIV_ID + r")(?:\.pdf)?", attrs.get("href", ""))
+            match = re.fullmatch(
+                r"(?:https://arxiv.org)?/pdf/(" + ARXIV_ID + r")(?:\.pdf)?", attrs.get("href", "")
+            )
             if match:
                 self.pdf_versions.add(match[1])
         if tag in {"meta", "link", "img", "br", "hr", "input", "source", "wbr"}:
             return
         parent_skip = bool(self.stack and self.stack[-1]["skip"])
-        skip = parent_skip or tag in {"script", "style", "nav", "footer"} or any(
-            c in classes for c in ("ltx_bibliography", "ltx_appendix")
+        skip = (
+            parent_skip
+            or tag in {"script", "style", "nav", "footer"}
+            or any(c in classes for c in ("ltx_bibliography", "ltx_appendix"))
         )
         article = tag == "article" or bool(self.stack and self.stack[-1]["article"])
         anchor = attrs.get("id") or (self.stack[-1]["anchor"] if self.stack else "")
         kind = "heading" if re.fullmatch(r"h[1-6]", tag) else "paragraph" if tag == "p" else ""
-        self.stack.append(dict(tag=tag, skip=skip, article=article, anchor=anchor, kind=kind, text=[]))
+        self.stack.append(
+            dict(tag=tag, skip=skip, article=article, anchor=anchor, kind=kind, text=[])
+        )
         if tag == "math" and article and not skip:
             latex = attrs.get("alttext", "").strip()
             if latex:
@@ -86,13 +96,25 @@ class ArticleParser(HTMLParser):
                 for node in self.stack[:-1]:
                     if node["kind"]:
                         node["text"].append(f" ${latex}$ ")
-                if attrs.get("display") == "block" or any("ltx_equation" in str(n.get("classes", "")) for n in self.stack):
-                    self.items.append({"kind": "equation", "latex": latex[:6000], "text": latex[:6000], "anchor": anchor, "section": self.section})
+                if attrs.get("display") == "block" or any(
+                    "ltx_equation" in str(n.get("classes", "")) for n in self.stack
+                ):
+                    self.items.append(
+                        {
+                            "kind": "equation",
+                            "latex": latex[:6000],
+                            "text": latex[:6000],
+                            "anchor": anchor,
+                            "section": self.section,
+                        }
+                    )
             self.stack[-1]["skip"] = True
         self.stack[-1]["classes"] = classes
 
     def handle_endtag(self, tag):
-        index = next((i for i in range(len(self.stack) - 1, -1, -1) if self.stack[i]["tag"] == tag), None)
+        index = next(
+            (i for i in range(len(self.stack) - 1, -1, -1) if self.stack[i]["tag"] == tag), None
+        )
         if index is None:
             return
         nodes = self.stack[index:]
@@ -104,7 +126,14 @@ class ArticleParser(HTMLParser):
             if node["kind"] == "heading":
                 self.section = value
             elif node["kind"] == "paragraph" and len(value) > 30:
-                self.items.append({"kind": "paragraph", "text": value[:6000], "anchor": node["anchor"], "section": self.section})
+                self.items.append(
+                    {
+                        "kind": "paragraph",
+                        "text": value[:6000],
+                        "anchor": node["anchor"],
+                        "section": self.section,
+                    }
+                )
 
     def handle_data(self, data):
         if self.stack and self.stack[-1]["skip"]:
@@ -132,11 +161,17 @@ def parse_html(html: str, version: str) -> list[dict]:
 def load_source(parsed, workspace: Workspace) -> dict:
     try:
         result = json.loads(workspace.read_text(CACHE))
-        if result.get("document_key") == document_key(parsed) and result.get("version") == paper_version(parsed):
+        if result.get("document_key") == document_key(parsed) and result.get(
+            "version"
+        ) == paper_version(parsed):
             return result
     except (OSError, ValueError, AttributeError):
         pass
-    return {"status": "not_loaded" if paper_version(parsed) else "version_unresolved", "version": paper_version(parsed), "items": []}
+    return {
+        "status": "not_loaded" if paper_version(parsed) else "version_unresolved",
+        "version": paper_version(parsed),
+        "items": [],
+    }
 
 
 def ingest_source(parsed, workspace: Workspace) -> dict:
@@ -144,7 +179,13 @@ def ingest_source(parsed, workspace: Workspace) -> dict:
     if cached["status"] == "ready" or time.time() - cached.get("checked_at", 0) < 300:
         return cached
     version = paper_version(parsed)
-    result = {"status": "version_unresolved", "version": version, "document_key": document_key(parsed), "checked_at": time.time(), "items": []}
+    result = {
+        "status": "version_unresolved",
+        "version": version,
+        "document_key": document_key(parsed),
+        "checked_at": time.time(),
+        "items": [],
+    }
     if version:
         url = f"https://arxiv.org/html/{version}"
         result["url"] = url
@@ -164,6 +205,24 @@ def retrieve_source(parsed, workspace: Workspace, query: str, limit: int = 3) ->
     source = load_source(parsed, workspace)
     if source["status"] != "ready":
         return []
-    tokens = set(re.findall(r"[a-zA-Z]{3,}", query.lower())) - {"the", "this", "that", "paper", "what", "explain"}
-    ranked = sorted(source["items"], key=lambda item: len(tokens & set(re.findall(r"[a-zA-Z]{3,}", (item["text"] + " " + item["section"]).lower()))), reverse=True)
-    return [dict(item, version=source["version"]) for item in ranked if tokens & set(re.findall(r"[a-zA-Z]{3,}", (item["text"] + " " + item["section"]).lower()))][:limit]
+    tokens = set(re.findall(r"[a-zA-Z]{3,}", query.lower())) - {
+        "the",
+        "this",
+        "that",
+        "paper",
+        "what",
+        "explain",
+    }
+    ranked = sorted(
+        source["items"],
+        key=lambda item: len(
+            tokens
+            & set(re.findall(r"[a-zA-Z]{3,}", (item["text"] + " " + item["section"]).lower()))
+        ),
+        reverse=True,
+    )
+    return [
+        dict(item, version=source["version"])
+        for item in ranked
+        if tokens & set(re.findall(r"[a-zA-Z]{3,}", (item["text"] + " " + item["section"]).lower()))
+    ][:limit]

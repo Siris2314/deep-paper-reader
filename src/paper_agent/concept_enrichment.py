@@ -35,6 +35,80 @@ class TavilyTermResearch:
     request_id: str | None = None
 
 
+_MATH_COMMAND = re.compile(r"\\[A-Za-z]+")
+_MATH_OPERATOR = re.compile(r"(?<![<>])=|\\(?:leftarrow|rightarrow|approx|propto|sim)\b")
+_MATH_END = re.compile(
+    r",\s+(?=(?:so|where|which|while|therefore|and\s+(?:the|this|each))\b)|[.!?](?=\s|$)"
+)
+_MATH_ATOM = re.compile(
+    r"(?<![\w$])((?:[A-Za-z][A-Za-z0-9]*_)?\\[A-Za-z]+"
+    r"(?:(?:\{[^{}\n]*\})|(?:_(?:\{[^{}\n]*\}|\\?[A-Za-z0-9]+))|"
+    r"(?:\^(?:\{[^{}\n]*\}|\\?[A-Za-z0-9]+)))*)"
+)
+_PROTECTED_MATH = re.compile(r"`[^`\n]*`|\$[^$\n]+\$|\\\([^\n]*?\\\)")
+
+
+def normalize_concept_formatting(value: Any) -> str:
+    """Repair common research-output math formatting without interpreting its content."""
+
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    # Decode only unmistakable serialized line breaks. In particular, never touch \nabla.
+    text = re.sub(r"\\n(?=\\)", "\n", text)
+    text = re.sub(r"\\n\\n(?=\s|[A-Z#*-]|$)", "\n\n", text)
+    text = re.sub(r"\\n(?=[A-Z#*-])", "\n", text)
+    text = re.sub(r"\\\[([\s\S]*?)\\\]", lambda match: f"${match.group(1).strip()}$", text)
+
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        protected.append(match.group(0))
+        return f"@@MATH{len(protected) - 1}@@"
+
+    working = _PROTECTED_MATH.sub(protect, text)
+    # For an unwrapped equation, start at the last LaTeX command before its operator.
+    # This avoids swallowing prose such as "parameters \theta are updated ... loss \mathcal{L} =".
+    for _ in range(12):
+        operator = _MATH_OPERATOR.search(working)
+        if not operator:
+            break
+        boundary = max(
+            working.rfind("\n", 0, operator.start()),
+            working.rfind(".", 0, operator.start()),
+            working.rfind("!", 0, operator.start()),
+            working.rfind("?", 0, operator.start()),
+        )
+        commands = list(_MATH_COMMAND.finditer(working, boundary + 1, operator.start()))
+        if not commands:
+            # Mask a prose equality so later equations can still be repaired.
+            marker = f"@@OP{operator.start()}@@"
+            working = working[: operator.start()] + marker + working[operator.end() :]
+            continue
+        start = commands[-1].start()
+        while start > boundary + 1 and not working[start - 1].isspace():
+            start -= 1
+        end_match = _MATH_END.search(working, operator.end())
+        end = end_match.start() if end_match else len(working)
+        expression = working[start:end].rstrip(" ,")
+        if not expression or "@@" in expression:
+            break
+        protected.append(f"${expression}$")
+        replacement = f"@@MATH{len(protected) - 1}@@"
+        working = working[:start] + replacement + working[start + len(expression) :]
+
+    working = re.sub(r"@@OP\d+@@", "=", working)
+
+    def wrap_atom(match: re.Match[str]) -> str:
+        protected.append(f"${match.group(1)}$")
+        return f"@@MATH{len(protected) - 1}@@"
+
+    working = _MATH_ATOM.sub(wrap_atom, working)
+    for index, item in reversed(list(enumerate(protected))):
+        working = working.replace(f"@@MATH{index}@@", item)
+    return working.strip()
+
+
 def _tavily_http(method: str, endpoint: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
@@ -107,7 +181,7 @@ def _general_explanation(content: Any) -> str:
             or content.get("definition")
             or content.get("summary")
         )
-        return str(text or "").strip()
+        return normalize_concept_formatting(text)
     if not isinstance(content, str):
         return ""
     text = content.strip()
@@ -118,7 +192,7 @@ def _general_explanation(content: Any) -> str:
     except json.JSONDecodeError:
         pass
     text = re.sub(r"^#{1,4}\s+[^\n]+\n+", "", text)
-    return text[:2400].strip()
+    return normalize_concept_formatting(text[:2400])
 
 
 def _tavily_search_query(term: str) -> str:
@@ -227,7 +301,7 @@ def run_tavily_term_research(
             if search_tool is None
             else _payload(search_tool.invoke({"query": search_query}))
         )
-        explanation = str(searched.get("answer") or "").strip()
+        explanation = normalize_concept_formatting(searched.get("answer"))
         if not explanation:
             raise RuntimeError(
                 f"Tavily Research failed ({research_error}); search returned no answer."

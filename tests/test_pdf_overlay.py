@@ -62,6 +62,80 @@ def test_pdf_layout_does_not_annotate_vertical_arxiv_margin_text(tmp_path):
     assert any(mark["term"] == "reward model" for mark in layout["highlights"])
 
 
+def test_pdf_layout_caps_highlight_density_and_repeated_terms(tmp_path):
+    pdf = tmp_path / "dense-terms.pdf"
+    document = fitz.open()
+    page = document.new_page(width=612, height=792)
+    lines = ["model model model model model"] + [f"Concept{index}" for index in range(15)]
+    page.insert_textbox(fitz.Rect(54, 70, 550, 700), "\n".join(lines), fontsize=11)
+    document.save(pdf)
+    document.close()
+    parsed = parse_paper(pdf, tmp_path / "report")
+    terms = [
+        SignificantTerm(
+            term="model",
+            category="method",
+            score=100,
+            paper_occurrences=5,
+            method_occurrences=0,
+            evidence=[],
+            skills=["paper-term-highlighter"],
+        ),
+        *[
+            SignificantTerm(
+                term=f"Concept{index}",
+                category="concept",
+                score=90 - index,
+                paper_occurrences=1,
+                method_occurrences=0,
+                evidence=[],
+                skills=["paper-term-highlighter"],
+            )
+            for index in range(15)
+        ],
+    ]
+
+    layout = page_layout_payload(parsed, terms, 1)
+    names = [mark["term"] for mark in layout["highlights"]]
+
+    assert len(names) <= 18
+    assert len(set(names)) <= 12
+    assert names.count("model") == 2
+
+
+def test_pdf_layout_hides_low_confidence_automatic_terms_but_keeps_taught_terms(
+    tmp_path, sample_pdf
+):
+    parsed = parse_paper(sample_pdf, tmp_path / "report")
+    low_confidence = SignificantTerm(
+        term="model",
+        category="concept",
+        score=4.5,
+        paper_occurrences=1,
+        method_occurrences=0,
+        evidence=[],
+        skills=["paper-term-highlighter"],
+    )
+
+    automatic = page_layout_payload(parsed, [low_confidence], 1)
+    taught = page_layout_payload(
+        parsed,
+        [
+            SignificantTerm(
+                **{
+                    **low_confidence.__dict__,
+                    "learned": True,
+                    "correction_count": 1,
+                }
+            )
+        ],
+        1,
+    )
+
+    assert not automatic["highlights"]
+    assert any(mark["term"] == "model" for mark in taught["highlights"])
+
+
 def test_pdf_layout_exposes_hoverable_math_regions(tmp_path, sample_pdf):
     parsed = parse_paper(sample_pdf, tmp_path / "report")
 

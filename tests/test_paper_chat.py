@@ -132,8 +132,10 @@ def test_graph_persists_a_chat_turn_without_external_models(tmp_path, monkeypatc
         )
 
     monkeypatch.setattr("paper_agent.paper_chat._invoke_specialist", fake_specialist)
+
     def no_judge(self, claims):
         raise AssertionError("Verbatim evidence should not need a model call")
+
     monkeypatch.setattr("paper_agent.paper_chat.PaperChatWorkflow._judge_claims", no_judge)
     result = run_paper_chat(
         sample_paper(),

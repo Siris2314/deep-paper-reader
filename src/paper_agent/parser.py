@@ -282,6 +282,9 @@ def parse_paper(pdf_path: str | Path, output_dir: str | Path) -> ParsedPaper:
         table_cards=table_cards,
     )
     save_parsed_paper(parsed, workspace)
+    from paper_agent.scholarly_metadata import save_local_identity
+
+    save_local_identity(parsed, workspace)
     return parsed
 
 

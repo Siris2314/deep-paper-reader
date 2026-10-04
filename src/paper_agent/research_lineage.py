@@ -6,12 +6,12 @@ import os
 import re
 import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 from paper_agent.parser import ParsedPaper, clean_line
+from paper_agent.scholarly_metadata import paper_identity, scholarly_json_get
 from paper_agent.workspace import Workspace
 
 
@@ -237,12 +237,12 @@ def _term_score(term: str, entry: BibliographyEntry, contexts: list[CitationCont
     return sum(3 if token in entry.title.casefold() else 1 for token in tokens if token in haystack)
 
 
-def _arxiv_id(parsed: ParsedPaper) -> str | None:
-    candidates = [parsed.metadata.source_pdf, parsed.full_text[:5000]]
-    for value in candidates:
-        match = re.search(r"(?:arxiv\s*:\s*|/|\\)(\d{4}\.\d{4,5})(?:v\d+)?", str(value), re.I)
-        if match:
-            return match.group(1)
+def _external_paper_id(parsed: ParsedPaper) -> str | None:
+    identity = paper_identity(parsed)
+    if identity.get("arxiv_id"):
+        return f"ARXIV:{identity['arxiv_id']}"
+    if identity.get("doi"):
+        return f"DOI:{identity['doi']}"
     return None
 
 
@@ -255,10 +255,8 @@ def _semantic_scholar_headers() -> dict[str, str]:
 
 
 def _semantic_scholar_json(url: str, timeout: float = 12.0) -> dict[str, Any]:
-    request = urllib.request.Request(url, headers=_semantic_scholar_headers())
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        payload = json.load(response)
-    return payload if isinstance(payload, dict) else {}
+    del timeout
+    return scholarly_json_get(url, _semantic_scholar_headers())
 
 
 def semantic_scholar_references(
@@ -272,10 +270,10 @@ def semantic_scholar_references(
     }
     if not key and not allow_shared:
         return "not_configured", []
-    arxiv_id = _arxiv_id(parsed)
-    if not arxiv_id:
+    external_id = _external_paper_id(parsed)
+    if not external_id:
         return "paper_id_unresolved", []
-    paper_id = urllib.parse.quote(f"ARXIV:{arxiv_id}", safe=":")
+    paper_id = urllib.parse.quote(external_id, safe=":")
     fields = (
         "contexts,intents,isInfluential,title,year,url,abstract,authors,citationCount,externalIds"
     )

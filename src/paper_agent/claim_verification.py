@@ -41,11 +41,14 @@ def check_claims(
         sources = {key: passages[key] for key in ids if key in passages}
         if not ids or len(sources) != len(ids):
             result.reason = "Missing or unresolvable inline evidence citation."
-        elif any(
-            normalized(claim) == normalized(sentence)
-            for passage in sources.values()
-            for sentence in re.split(r"\n+|(?<=[.!?])\s+", passage)
-        ) and len(claim) > 15:
+        elif (
+            any(
+                normalized(claim) == normalized(sentence)
+                for passage in sources.values()
+                for sentence in re.split(r"\n+|(?<=[.!?])\s+", passage)
+            )
+            and len(claim) > 15
+        ):
             result.status = "supported"
             result.reason = "The claim appears verbatim in the cited passage."
             result.quote = claim
@@ -68,8 +71,7 @@ def check_claims(
             status = finding.get("status")
             quote = str(finding.get("quote", ""))
             actual_quote = len(quote.strip()) >= 12 and any(
-                normalized(quote) in normalized(p)
-                for p in requests[index]["evidence"].values()
+                normalized(quote) in normalized(p) for p in requests[index]["evidence"].values()
             )
             if status in {"supported", "contradicted"} and actual_quote:
                 result.status = status
@@ -83,7 +85,11 @@ def check_claims(
                 result.reason = "The verifier did not return a matching source quotation."
             if result.status == "supported":
                 numbers = set(re.findall(r"(?<!\w)\d+(?:\.\d+)?", result.claim))
-                source_numbers = set(re.findall(r"(?<!\w)\d+(?:\.\d+)?", " ".join(requests[index]["evidence"].values())))
+                source_numbers = set(
+                    re.findall(
+                        r"(?<!\w)\d+(?:\.\d+)?", " ".join(requests[index]["evidence"].values())
+                    )
+                )
                 if numbers - source_numbers:
                     result.status = "unresolved"
                     result.reason = "A numerical value in the claim is absent from its cited passages; derived values need separate validation."

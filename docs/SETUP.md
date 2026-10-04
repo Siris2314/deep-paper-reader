@@ -238,6 +238,12 @@ chat, math, and reports. Its budgets and diagnostics are described there; use
 `python scripts/benchmark_harness.py` to compare agent framework prompt overhead offline.
 See [data source recommendations](DATA_SOURCES.md) for structured-paper and OCR options.
 
+The reader's **Resolve metadata and related work** action uses exact identifiers from PDF page 1.
+Crossref and casual OpenAlex lookup work without credentials. Set `CROSSREF_MAILTO` for the
+Crossref polite pool, `OPENALEX_API_KEY` for a larger OpenAlex budget, and
+`SEMANTIC_SCHOLAR_API_KEY` for Semantic Scholar metadata and citation enrichment. External
+records stay labeled as discovery context and are never treated as paper evidence.
+
 ### Tavily enrichment stops
 
 Verify `TAVILY_API_KEY`, restart the reader after editing `.env`, and inspect the error shown in the concept popover. Tavily queries are intentionally capped below provider length limits.

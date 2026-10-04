@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "thresholds": {
+    "minimum_precision": 0.9,
+    "minimum_recall": 0.9
+  },
+  "cases": [
+    {
+      "name": "introduced-methods-and-formats",
+      "title": "Atlas Retrieval Network",
+      "text": "We introduce Atlas Retrieval Network (ARN), a sparse retrieval architecture. We generate data with a procedure we call Agentic Self-Instruct. ARN uses a contrastive objective, and the contrastive objective improves retrieval. ARN outperforms baselines throughout training. Results comparing training are reported. The implementation emits JSON records, and JSON validation runs before evaluation.",
+      "relevant": [
+        "Atlas Retrieval Network",
+        "ARN",
+        "Agentic Self-Instruct",
+        "contrastive objective"
+      ],
+      "irrelevant": [
+        "JSON",
+        "throughout training",
+        "results comparing training"
+      ]
+    },
+    {
+      "name": "preference-optimization",
+      "title": "Direct Preference Optimization",
+      "text": "Direct Preference Optimization (DPO) directly trains a policy from human preferences. DPO replaces a separate reward model, while the reward model remains useful background. DPO avoids reinforcement learning throughout training. The implementation stores JSON configuration and exports a PDF report.",
+      "relevant": [
+        "Direct Preference Optimization",
+        "DPO",
+        "reward model",
+        "human preferences",
+        "reinforcement learning"
+      ],
+      "irrelevant": [
+        "JSON",
+        "PDF",
+        "throughout training"
+      ]
+    },
+    {
+      "name": "math-objective-and-boilerplate",
+      "title": "Focal Retrieval",
+      "text": "We optimize Focal Loss (FL) for retrieval. The focal loss objective emphasizes difficult examples, and the focal loss is evaluated in every ablation. Results comparing evaluation settings appear in the appendix. The API writes CSV tables and an HTML summary.",
+      "relevant": [
+        "Focal Loss",
+        "FL",
+        "focal loss objective"
+      ],
+      "irrelevant": [
+        "API",
+        "CSV",
+        "HTML",
+        "results comparing evaluation"
+      ]
+    }
+  ]
+}

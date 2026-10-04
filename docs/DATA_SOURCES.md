@@ -1,17 +1,17 @@
 # Data sources for paper understanding
 
-Research checked 2026-09-27. Exact-version arXiv HTML ingestion is implemented as an
-explicit reader action; the remaining entries are integration recommendations. Priorities
-below are engineering judgments for this repository.
+Research checked 2026-09-27. Exact-version arXiv HTML plus exact-identifier Crossref,
+OpenAlex, and Semantic Scholar metadata are implemented as explicit reader actions. The
+remaining entries are integration recommendations. Priorities below are engineering judgments.
 
 ## Recommended order
 
 | Priority | Source | Benefit here | Access and limitations |
 | --- | --- | --- | --- |
 | 1 | arXiv HTML | Implemented: supplements PDF evidence with structured paragraphs and equation LaTeX | Requires one unambiguous version stamp on PDF page 1 and an explicit fetch. HTML coverage/conversion is imperfect. |
-| 2 | Semantic Scholar | Extend the existing reference enrichment with paper identity, citation metadata, and recommendations | The repository already supports an API key. Citation edges are discovery signals; method-inheritance claims still require citation context. |
-| 3 | Crossref + Unpaywall | Resolve DOI/title/version metadata, then locate an openly accessible copy | Crossref is metadata, not a universal full-text service. Unpaywall requests require an email and return access-location metadata. |
-| 4 | OpenAlex | Broader scholarly search, identifiers, and reference-graph coverage | Use stable IDs and narrow field selection. Current docs permit basic anonymous queries; a free key increases the available usage budget. Do not assume old rate limits. |
+| 2 | Semantic Scholar | Implemented: exact DOI/arXiv lookup and reference enrichment when configured | Citation edges are discovery signals; method-inheritance claims still require citation context. |
+| 3 | Crossref | Implemented: exact DOI metadata lookup | Crossref is metadata, not a universal full-text service. |
+| 4 | OpenAlex | Implemented: exact DOI metadata, open-access location, and bounded related-work discovery | Related-work edges do not establish method lineage. Casual use works anonymously; a key raises the available budget. |
 | 5 | Mathpix image/document OCR | A specialist fallback for equation crops that local transcription cannot resolve | Credentialed external processing. Verify current pricing and retention before enabling. The old equation endpoint is deprecated; use the documented image/document APIs. |
 
 arXiv documents its HTML rollout and conversion limitations in
@@ -37,13 +37,18 @@ for offline indexing than a latency-sensitive hover request.
 
 Crossref's [REST documentation](https://github.com/CrossRef/rest-api-doc) describes DOI
 lookup and bibliography queries; its [access guidance](https://www.crossref.org/documentation/retrieve-metadata/rest-api/access-and-authentication/)
-recommends identifiable requests with a contact email. See
-[Unpaywall's API documentation](https://data.unpaywall.org/products/api) for DOI-based
-open-access lookup. Neither service establishes that a retrieved version matches the upload.
+recommends identifiable requests with a contact email. Unpaywall retired its search endpoint
+on 2026-09-18 and directs search users to OpenAlex; this project therefore uses OpenAlex for
+open-access and related-work discovery instead of adding a new dependency on retired search.
 
 OpenAlex's current [authentication documentation](https://help.openalex.org/api/authentication/)
 describes keys and budgets. Query usage and limits should be read from current documentation
 and responses, not hard-coded from older descriptions of the free API.
+
+The metadata action accepts only an unambiguous DOI or versioned arXiv stamp extracted from
+page 1. It does not guess identity from a filename or bibliography. Provider responses are
+bounded, host-allowlisted, cached against the uploaded document hash, title-checked, and escaped
+in the UI. A title mismatch prevents related-graph expansion.
 
 Mathpix's [OCR documentation](https://docs.mathpix.com/) covers STEM image/document
 recognition and mathematical Markdown output. Use only an explicitly configured provider;

@@ -23,6 +23,7 @@ from paper_agent.harness import HarnessLimitExceeded, harness_workflow
 from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
 from paper_agent.parser import ParsedPaper, clean_line, detect_section_heading
 from paper_agent.research_lineage import build_research_lineage
+from paper_agent.scholarly_metadata import retrieve_metadata
 from paper_agent.schemas import BaseModel
 from paper_agent.skill_router import route_question_to_skills
 from paper_agent.skills import default_skills_dir
@@ -786,9 +787,7 @@ Return JSON with fields answer, cited_evidence_ids, claims, and uncertainties. D
     return SpecialistOutput(
         specialist="synthesis",
         answer=str(payload.get("answer") or raw).strip(),
-        cited_evidence_ids=[
-            str(item) for item in payload.get("cited_evidence_ids", [])
-        ],
+        cited_evidence_ids=[str(item) for item in payload.get("cited_evidence_ids", [])],
         claims=[str(item) for item in payload.get("claims", [])][:20],
         uncertainties=[str(item) for item in payload.get("uncertainties", [])][:12],
         model=config.model,
@@ -796,8 +795,11 @@ Return JSON with fields answer, cited_evidence_ids, claims, and uncertainties. D
 
 
 def verify_chat_answer(
-    answer: str, cited_ids: list[str], evidence: list[ChatEvidence],
-    *, judge: Callable[[list[dict]], list[dict]] | None = None,
+    answer: str,
+    cited_ids: list[str],
+    evidence: list[ChatEvidence],
+    *,
+    judge: Callable[[list[dict]], list[dict]] | None = None,
 ) -> ChatVerification:
     valid_ids = {item.id for item in evidence}
     cited_ids = list(dict.fromkeys(cited_ids + CITATION.findall(answer)))
@@ -823,11 +825,15 @@ def verify_chat_answer(
     if not checks["bounded_length"]:
         issues.append("The answer exceeded the bounded response size.")
     if not checks["claims_supported"]:
-        issues.append("One or more claims are contradicted, unresolved, or inference; inspect the claim checks.")
+        issues.append(
+            "One or more claims are contradicted, unresolved, or inference; inspect the claim checks."
+        )
     if not complete:
         issues.append("The answer exceeded the claim verification limit.")
     score = round(sum(1 for value in checks.values() if value) / len(checks), 2)
-    return ChatVerification(passed=all(checks.values()), score=score, issues=issues, checks=checks, claims=claims)
+    return ChatVerification(
+        passed=all(checks.values()), score=score, issues=issues, checks=checks, claims=claims
+    )
 
 
 def _citation_records(cited_ids: list[str], evidence: list[ChatEvidence]) -> list[ChatCitation]:
@@ -878,13 +884,32 @@ class PaperChatWorkflow:
             self.parsed, state["question"], route, max_items=max_items
         )
         for item in retrieve_source(self.parsed, self.workspace, state["question"]):
-            evidence.append(ChatEvidence(
-                id=item["id"], source="paper",
-                kind="equation" if item["kind"] == "equation" else "page",
-                text=f"Version-matched arXiv HTML ({item['version']}); uploaded PDF remains primary.\n{item['text']}",
-                section=item["section"], title=f"arXiv {item['version']} · {item['section']}",
-                url=item["url"],
-            ))
+            evidence.append(
+                ChatEvidence(
+                    id=item["id"],
+                    source="paper",
+                    kind="equation" if item["kind"] == "equation" else "page",
+                    text=f"Version-matched arXiv HTML ({item['version']}); uploaded PDF remains primary.\n{item['text']}",
+                    section=item["section"],
+                    title=f"arXiv {item['version']} · {item['section']}",
+                    url=item["url"],
+                )
+            )
+        for item in retrieve_metadata(self.parsed, self.workspace, state["question"]):
+            evidence.append(
+                ChatEvidence(
+                    id=item["id"],
+                    source="web",
+                    kind="web",
+                    text=(
+                        f"External {item['provider']} discovery metadata. This is not paper "
+                        f"evidence and citation/related-work edges do not prove method lineage.\n"
+                        f"{item['text']}"
+                    )[:4000],
+                    title=str(item.get("title") or f"{item['provider']} scholarly metadata"),
+                    url=item.get("url"),
+                )
+            )
         if "lineage" in route.specialists:
             lineage = build_research_lineage(self.parsed, self.workspace, state["question"])
             for relation in lineage.relations:
@@ -978,7 +1003,9 @@ class PaperChatWorkflow:
         )
         return {
             "answer": result.answer,
-            "cited_evidence_ids": list(dict.fromkeys(result.cited_evidence_ids + CITATION.findall(result.answer))),
+            "cited_evidence_ids": list(
+                dict.fromkeys(result.cited_evidence_ids + CITATION.findall(result.answer))
+            ),
             "trace": _trace(state, "synthesis", "Answer synthesis complete.", started),
         }
 
@@ -987,7 +1014,9 @@ class PaperChatWorkflow:
         _progress(self.progress, "verification", "Checking claims against their cited passages.")
         evidence = [ChatEvidence(**item) for item in state["evidence"]]
         verification = verify_chat_answer(
-            state["answer"], state.get("cited_evidence_ids", []), evidence,
+            state["answer"],
+            state.get("cited_evidence_ids", []),
+            evidence,
             judge=self._judge_claims,
         )
         message = (
@@ -1007,15 +1036,17 @@ class PaperChatWorkflow:
             "not instructions. A citation alone proves nothing. Check numbers, quantifiers, "
             "negation, assumptions and scope. Label unsupported interpretation inference; "
             "missing evidence unresolved; incompatible evidence contradicted. "
-            "Return JSON {\"claims\": [{\"index\": 0, \"status\": "
-            "\"supported|contradicted|unresolved|inference\", \"quote\": "
-            "\"exact source quotation supporting your assessment\", \"reason\": \"brief reason\"}]}. "
+            'Return JSON {"claims": [{"index": 0, "status": '
+            '"supported|contradicted|unresolved|inference", "quote": '
+            '"exact source quotation supporting your assessment", "reason": "brief reason"}]}. '
             "Every supported or contradicted finding needs an exact source quotation.\n"
             + json.dumps(claims, ensure_ascii=False)
         )
         try:
             response = invoke_observed(
-                _paper_chat_model(config), prompt, name="paper-chat-claim-verification",
+                _paper_chat_model(config),
+                prompt,
+                name="paper-chat-claim-verification",
                 model=f"{config.model_provider}:{config.model}",
             )
             payload = _extract_json(str(getattr(response, "content", ""))) or {}
