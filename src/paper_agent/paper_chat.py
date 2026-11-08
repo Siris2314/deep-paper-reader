@@ -21,7 +21,7 @@ from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage
 from paper_agent.harness import HarnessLimitExceeded, harness_workflow
 from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
-from paper_agent.parser import ParsedPaper, clean_line, detect_section_heading
+from paper_agent.parser import ParsedPaper, clean_line
 from paper_agent.research_lineage import build_research_lineage
 from paper_agent.scholarly_metadata import retrieve_metadata
 from paper_agent.schemas import BaseModel
@@ -231,12 +231,12 @@ def decide_chat_route(question: str, mode: ChatMode = "fast") -> RouteDecision:
 def _page_section_map(parsed: ParsedPaper) -> dict[int, str]:
     current = "front matter"
     result: dict[int, str] = {}
-    for page, text in sorted(parsed.page_text.items()):
-        for line in text.splitlines():
-            heading = detect_section_heading(clean_line(line))
-            if heading:
-                current = heading.replace("_", " ")
-                break
+    by_page: dict[int, list[str]] = {}
+    for marker in parsed.section_markers:
+        by_page.setdefault(int(marker["page"]), []).append(str(marker["label"]))
+    for page in sorted(parsed.page_text):
+        if by_page.get(page):
+            current = by_page[page][0]
         result[page] = current
     return result
 

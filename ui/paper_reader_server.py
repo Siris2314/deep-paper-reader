@@ -51,8 +51,6 @@ from paper_agent.paper_chat import (  # noqa: E402
 from paper_agent.research_lineage import build_research_lineage, research_lineage_payload  # noqa: E402
 from paper_agent.parser import (  # noqa: E402
     ParsedPaper,
-    clean_line,
-    detect_section_heading,
     load_parsed_paper_from_workspace,
     parse_paper,
 )
@@ -471,19 +469,7 @@ def pdf_page_sizes(parsed: ParsedPaper) -> list[dict[str, float | int]]:
 
 
 def section_navigation(parsed: ParsedPaper) -> list[dict[str, object]]:
-    sections: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for page_number, text in sorted(parsed.page_text.items()):
-        for line in text.splitlines():
-            label = clean_line(line)
-            if not detect_section_heading(label):
-                continue
-            key = label.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            sections.append({"label": label, "page": page_number})
-    return sections[:40]
+    return parsed.section_markers[:40]
 
 
 def _tokens(text: str) -> list[str]:
@@ -757,6 +743,12 @@ def suppress_highlight(
 
 def state_payload(workspace: Workspace, parsed: ParsedPaper) -> dict[str, object]:
     terms = load_significant_terms(parsed, workspace)
+    structure_path = workspace.path("parsed/structure_status.json")
+    structure_status = (
+        json.loads(structure_path.read_text(encoding="utf-8"))
+        if structure_path.exists()
+        else {"state": "unknown"}
+    )
     ocr_status_path = workspace.path("parsed/ocr_status.json")
     ocr_status = (
         json.loads(ocr_status_path.read_text(encoding="utf-8")) if ocr_status_path.exists() else {}
@@ -768,6 +760,7 @@ def state_payload(workspace: Workspace, parsed: ParsedPaper) -> dict[str, object
         },
         "scholarlyMetadata": load_metadata(parsed, workspace),
         "metadata": parsed.metadata.model_dump(),
+        "structure": structure_status,
         "ocr": {
             "pages": sum(status == "ocr" for status in ocr_status.values()),
             "unavailable": sum(
@@ -2088,7 +2081,11 @@ APP_HTML = r"""<!doctype html>
       const ocr = payload.ocr || {};
       const ocrNote = ocr.unavailable ? ` · OCR unavailable on ${ocr.unavailable} page(s)`
         : ocr.pages ? ` · ${ocr.pages} page(s) read with OCR` : '';
-      $('paperMeta').textContent = `${state.metadata.page_count || state.pages.length || 0} pages · local workspace${ocrNote}`;
+      const structureNote = payload.structure?.state === 'unavailable'
+        ? ' · structure unavailable (check model)'
+        : payload.structure?.state === 'partial' ? ' · paper structure incomplete' : '';
+      $('paperMeta').textContent = `${state.metadata.page_count || state.pages.length || 0} pages · local workspace${ocrNote}${structureNote}`;
+      $('paperMeta').title = payload.structure?.error || (payload.structure?.errors || []).join('; ');
       $('tavilyText').textContent = payload.tavilyReady
         ? 'Tavily ready on term open'
         : 'Tavily key not configured';
@@ -2233,17 +2230,19 @@ APP_HTML = r"""<!doctype html>
           body: file,
         });
         const stagedMessages = [
-          [45, 'Extracting page text and metadata...'],
-          [62, 'Detecting equations, figures, and tables...'],
-          [78, 'Scoring significant method, math, and result terms...'],
-          [88, 'Building highlighted reader view...'],
+          [45, 'Reading PDF text and scanned pages...'],
+          [70, 'Identifying paper structure with the local model...'],
         ];
         let stageIndex = 0;
+        let elapsed = 0;
         const stageTimer = setInterval(() => {
+          elapsed += 1;
           if (stageIndex < stagedMessages.length) {
             const [percent, message] = stagedMessages[stageIndex];
             setProgress(percent, message);
             stageIndex += 1;
+          } else {
+            setProgress(70, `Parsing pages and organizing paper structure... (${elapsed}s)`);
           }
         }, 1200);
         const res = await uploadPromise;

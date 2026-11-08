@@ -52,6 +52,7 @@ class HarnessPolicy:
     @classmethod
     def for_workflow(cls, workflow: str) -> HarnessPolicy:
         defaults = {
+            "parse": (64, 4, 500_000, 1800),
             "chat": (8, 24, 60_000, 300),
             "math": (12, 24, 100_000, 480),
             "concept": (4, 12, 30_000, 180),

@@ -7,6 +7,7 @@ import pytest
 
 # Unit tests must not depend on the availability of the external vocabulary archive.
 os.environ.setdefault("PWC_VOCAB_ALLOW_NETWORK", "false")
+os.environ["PAPER_STRUCTURE_ENABLED"] = "false"
 
 
 @pytest.fixture
