@@ -4,10 +4,11 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import fitz  # PyMuPDF
 
+from paper_agent.ocr import extract_page_text
 from paper_agent.schemas import EquationCard, FigureCard, PaperMetadata, TableCard
 from paper_agent.workspace import Workspace
 
@@ -64,26 +65,31 @@ def clean_line(line: str) -> str:
     return re.sub(r"\s+", " ", line).strip()
 
 
-def extract_pdf_text(pdf_path: str | Path) -> tuple[str, dict[int, str], PaperMetadata]:
+def extract_pdf_text(
+    pdf_path: str | Path,
+    on_ocr_page: Callable[[int, str, dict[str, Any] | None], None] | None = None,
+) -> tuple[str, dict[int, str], PaperMetadata]:
     pdf_path = Path(pdf_path).expanduser().resolve()
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
 
-    doc = fitz.open(pdf_path)
     page_text: dict[int, str] = {}
     full_parts: list[str] = []
 
-    for idx, page in enumerate(doc, start=1):
-        text = page.get_text("text") or ""
-        text = text.strip()
-        page_text[idx] = text
-        full_parts.append(f"\n\n--- PAGE {idx} ---\n{text}")
+    with fitz.open(pdf_path) as doc:
+        for idx, page in enumerate(doc, start=1):
+            text, layout, status = extract_page_text(page)
+            page_text[idx] = text
+            full_parts.append(f"\n\n--- PAGE {idx} ---\n{text}")
+            if on_ocr_page is not None and status is not None:
+                on_ocr_page(idx, status, layout)
+        page_count = len(doc)
 
     full_text = "\n".join(full_parts).strip()
     metadata = PaperMetadata(
         title_guess=guess_title(full_text),
         authors_guess=guess_authors(full_text),
-        page_count=len(doc),
+        page_count=page_count,
         source_pdf=str(pdf_path),
     )
     return full_text, page_text, metadata
@@ -267,7 +273,14 @@ def extract_captions(page_text: dict[int, str]) -> tuple[list[FigureCard], list[
 
 def parse_paper(pdf_path: str | Path, output_dir: str | Path) -> ParsedPaper:
     workspace = Workspace(output_dir)
-    full_text, page_text, metadata = extract_pdf_text(pdf_path)
+    ocr_status: dict[str, str] = {}
+
+    def save_ocr_page(page: int, status: str, layout: dict[str, Any] | None) -> None:
+        ocr_status[str(page)] = status
+        if layout is not None:
+            workspace.write_json(f"parsed/ocr_layout/{page:04d}.json", layout)
+
+    full_text, page_text, metadata = extract_pdf_text(pdf_path, save_ocr_page)
     sections = split_sections(full_text)
     equation_cards = extract_equation_cards(page_text)
     figure_cards, table_cards = extract_captions(page_text)
@@ -282,6 +295,7 @@ def parse_paper(pdf_path: str | Path, output_dir: str | Path) -> ParsedPaper:
         table_cards=table_cards,
     )
     save_parsed_paper(parsed, workspace)
+    workspace.write_json("parsed/ocr_status.json", ocr_status)
     from paper_agent.scholarly_metadata import save_local_identity
 
     save_local_identity(parsed, workspace)

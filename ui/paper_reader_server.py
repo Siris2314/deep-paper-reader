@@ -512,7 +512,10 @@ MIN_AUTOMATIC_HIGHLIGHT_SCORE = 8.0
 
 
 def page_layout_payload(
-    parsed: ParsedPaper, terms: list[SignificantTerm], page_number: int
+    parsed: ParsedPaper,
+    terms: list[SignificantTerm],
+    page_number: int,
+    workspace: Workspace | None = None,
 ) -> dict[str, object]:
     with fitz.open(source_pdf_path(parsed)) as doc:
         if page_number < 1 or page_number > len(doc):
@@ -520,8 +523,25 @@ def page_layout_payload(
         page = doc[page_number - 1]
         page_width = float(page.rect.width)
         page_height = float(page.rect.height)
-        raw_words = page.get_text("words", sort=True)
-        page_dict = page.get_text("dict", sort=True)
+        ocr_status_path = workspace.path("parsed/ocr_status.json") if workspace else None
+        ocr_status = (
+            json.loads(ocr_status_path.read_text(encoding="utf-8"))
+            if ocr_status_path and ocr_status_path.exists()
+            else {}
+        )
+        ocr_path = (
+            workspace.path(f"parsed/ocr_layout/{page_number:04d}.json") if workspace else None
+        )
+        ocr_page = ocr_status.get(str(page_number)) == "ocr" and bool(
+            ocr_path and ocr_path.exists()
+        )
+        if ocr_page:
+            ocr_layout = json.loads(ocr_path.read_text(encoding="utf-8"))
+            raw_words = ocr_layout["words"]
+            page_dict = ocr_layout["dict"]
+        else:
+            raw_words = page.get_text("words", sort=True)
+            page_dict = page.get_text("dict", sort=True)
 
     words = [
         {
@@ -608,6 +628,16 @@ def page_layout_payload(
                 )
 
     math_regions = extract_math_regions(page_dict, page_number, page_width, page_height)
+    if ocr_page:
+        for region in math_regions:
+            evidence = region.get("layout_evidence")
+            if isinstance(evidence, dict):
+                evidence["geometry_latex"] = ""
+                evidence["spans"] = []
+                evidence["ocr_source"] = True
+                evidence["coordinate_note"] = (
+                    "OCR word boxes locate the crop but cannot establish mathematical scripts."
+                )
 
     return {
         "page": page_number,
@@ -634,8 +664,10 @@ def render_page_png(workspace: Workspace, parsed: ParsedPaper, page_number: int)
     return content
 
 
-def render_equation_crop(parsed: ParsedPaper, page_number: int, region_id: str) -> bytes:
-    layout = page_layout_payload(parsed, [], page_number)
+def render_equation_crop(
+    parsed: ParsedPaper, page_number: int, region_id: str, workspace: Workspace | None = None
+) -> bytes:
+    layout = page_layout_payload(parsed, [], page_number, workspace)
     region = next((item for item in layout["mathRegions"] if item["id"] == region_id), None)
     if region is None:
         raise ValueError("Math region not found on this page.")
@@ -725,6 +757,10 @@ def suppress_highlight(
 
 def state_payload(workspace: Workspace, parsed: ParsedPaper) -> dict[str, object]:
     terms = load_significant_terms(parsed, workspace)
+    ocr_status_path = workspace.path("parsed/ocr_status.json")
+    ocr_status = (
+        json.loads(ocr_status_path.read_text(encoding="utf-8")) if ocr_status_path.exists() else {}
+    )
     return {
         "workspace": str(workspace.root),
         "arxivSource": {
@@ -732,6 +768,12 @@ def state_payload(workspace: Workspace, parsed: ParsedPaper) -> dict[str, object
         },
         "scholarlyMetadata": load_metadata(parsed, workspace),
         "metadata": parsed.metadata.model_dump(),
+        "ocr": {
+            "pages": sum(status == "ocr" for status in ocr_status.values()),
+            "unavailable": sum(
+                status.startswith("OCR unavailable:") for status in ocr_status.values()
+            ),
+        },
         "pages": pdf_page_sizes(parsed),
         "sections": section_navigation(parsed),
         "terms": [asdict(term) for term in terms],
@@ -2043,7 +2085,10 @@ APP_HTML = r"""<!doctype html>
       const title = String(state.metadata.title_guess || '').trim();
       $('paperTitle').textContent = title || 'Paper workspace';
       $('paperTitle').title = title;
-      $('paperMeta').textContent = `${state.metadata.page_count || state.pages.length || 0} pages · local workspace`;
+      const ocr = payload.ocr || {};
+      const ocrNote = ocr.unavailable ? ` · OCR unavailable on ${ocr.unavailable} page(s)`
+        : ocr.pages ? ` · ${ocr.pages} page(s) read with OCR` : '';
+      $('paperMeta').textContent = `${state.metadata.page_count || state.pages.length || 0} pages · local workspace${ocrNote}`;
       $('tavilyText').textContent = payload.tavilyReady
         ? 'Tavily ready on term open'
         : 'Tavily key not configured';
@@ -3273,7 +3318,7 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                 page_number = int(query.get("page", ["0"])[0])
                 workspace, parsed = load_workspace(workspace_arg)
                 terms = load_significant_terms(parsed, workspace, max_terms=120)
-                self._json(page_layout_payload(parsed, terms, page_number))
+                self._json(page_layout_payload(parsed, terms, page_number, workspace))
                 return
             if parsed_url.path == "/api/equation-crop":
                 query = parse_qs(parsed_url.query)
@@ -3281,7 +3326,10 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                 self._send(
                     HTTPStatus.OK,
                     render_equation_crop(
-                        parsed, int(query.get("page", ["0"])[0]), query.get("region", [""])[0]
+                        parsed,
+                        int(query.get("page", ["0"])[0]),
+                        query.get("region", [""])[0],
+                        workspace,
                     ),
                     "image/png",
                 )
@@ -3361,7 +3409,7 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                     return
                 workspace, parsed = load_workspace(workspace_arg)
                 terms = load_significant_terms(parsed, workspace, max_terms=120)
-                layout = page_layout_payload(parsed, terms, page_number)
+                layout = page_layout_payload(parsed, terms, page_number, workspace)
                 region = next(
                     (item for item in layout.get("mathRegions", []) if item.get("id") == region_id),
                     None,

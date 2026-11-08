@@ -140,6 +140,20 @@ Research-lineage labels are deliberately conservative. `Extends`, `modifies`, an
 support in the citing sentence. A bibliography entry or citation edge by itself is treated as
 background, not proof that one method inherits another.
 
+## Scanned PDFs
+
+The reader uses embedded PDF text when it is available. For image-heavy pages with little or no
+extractable text, it can use local [Tesseract OCR](https://pymupdf.readthedocs.io/en/latest/installation.html)
+through PyMuPDF. Install Tesseract and its language data separately to enable this fallback;
+ordinary digital PDFs do not need it. OCR results are saved in the paper workspace with page
+coordinates, so term highlights still sit over the original PDF. The reader shows how many pages
+used OCR and flags pages where it was unavailable.
+
+The defaults are `PAPER_OCR_ENABLED=true`, `PAPER_OCR_LANGUAGE=eng`, and `PAPER_OCR_DPI=200`.
+Set these in `.env` to change them. OCR is selective because it is slower than reading embedded
+text. Equations recovered from an image still need visual verification before their notation or
+symbol explanations can be trusted.
+
 ## Math explanations
 
 The math path is a bounded evaluation loop:
