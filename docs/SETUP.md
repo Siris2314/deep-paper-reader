@@ -183,6 +183,9 @@ The complete annotated list lives in [`.env.example`](../.env.example). The most
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_NUM_CTX` | `8192` | Active context allocation sent with local requests |
 | `PAPER_READER_MATH_MODEL` | `qwen3.5:4b` | Math explanation model |
+| `PAPER_READER_MATH_VISION_ENABLED` | `true` | Allow bounded equation-crop transcription when cheap sources remain uncertain |
+| `PAPER_READER_MATH_VISION_MODE` | `fallback` | `fallback` routes uncertain display equations; `always` forces vision; `off` disables it |
+| `PAPER_READER_MATH_VISION_THRESHOLD` | `0.78` | Preliminary confidence required to skip the vision fallback |
 | `PAPER_READER_MATH_REPAIR_ATTEMPTS` | `1` | Bounded revise-and-rejudge attempts after a weak math answer |
 | `PAPER_READER_MATH_MIN_IMPROVEMENT` | `0.1` | Minimum judge-score gain required to keep a repair |
 | `PAPER_READER_AGENT_MODEL` | `qwen2.5:7b` | Concept and chat model |

@@ -33,6 +33,8 @@ dependencies = [
     "antlr4-python3-runtime>=4.11,<4.12",
     "pydantic>=2.8.0",
     "python-dotenv>=1.0.0",
+    "sentence-transformers>=3.4,<4",
+    "transformers>=4.48,<4.52",
     "rich>=13.7.0",
 ]
 
@@ -61,6 +63,10 @@ where = ["src"]
 line-length = 100
 target-version = "py311"
 extend-exclude = ["paper_report", "paper_reports", "uploaded_papers"]
+
+[tool.ruff.lint]
+# Keep the project's core correctness rules stable across Ruff releases.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

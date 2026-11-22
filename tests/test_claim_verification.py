@@ -97,3 +97,39 @@ def test_explicit_inference_is_not_presented_as_verified():
     )
     assert result.claims[0].status == "inference"
     assert not result.passed
+
+
+def test_symbol_case_change_cannot_use_verbatim_shortcut():
+    result = verify_chat_answer(
+        "The matrix W is held fixed during training [P1.1].",
+        ["P1.1"],
+        evidence("The matrix w is held fixed during training."),
+    )
+    assert not result.passed
+
+
+def test_negative_number_cannot_be_verified_as_positive():
+    result = verify_chat_answer(
+        "The measured temperature was 12 degrees [P1.1].",
+        ["P1.1"],
+        evidence("The measured temperature was -12 degrees."),
+        judge=lambda _: [
+            {
+                "index": 0,
+                "status": "supported",
+                "quote": "The measured temperature was -12 degrees.",
+            }
+        ],
+    )
+    assert not result.passed
+
+
+def test_number_elsewhere_in_passage_does_not_support_claim():
+    quote = "The baseline accuracy was 71 percent."
+    result = verify_chat_answer(
+        "The baseline accuracy was 90 percent [P1.1].",
+        ["P1.1"],
+        evidence(quote + " A separate model reached 90 percent."),
+        judge=lambda _: [{"index": 0, "status": "supported", "quote": quote}],
+    )
+    assert not result.passed

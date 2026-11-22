@@ -19,12 +19,18 @@ from paper_agent.arxiv_source import retrieve_source
 from paper_agent.claim_verification import CITATION, ClaimCheck, check_claims
 from paper_agent.config import DEFAULT_OLLAMA_BASE_URL, RunConfig
 from paper_agent.context_diagnostics import record_context_usage
+from paper_agent.evidence_index import (
+    build_evidence_records,
+    evidence_allowed,
+    resolve_query,
+    search_records,
+)
 from paper_agent.harness import HarnessLimitExceeded, harness_workflow
 from paper_agent.observability import invoke_observed, paper_session_id, workflow_trace
 from paper_agent.parser import ParsedPaper, clean_line
 from paper_agent.research_lineage import build_research_lineage
-from paper_agent.scholarly_metadata import retrieve_metadata
 from paper_agent.schemas import BaseModel
+from paper_agent.scholarly_metadata import retrieve_metadata
 from paper_agent.skill_router import route_question_to_skills
 from paper_agent.skills import default_skills_dir
 from paper_agent.workspace import Workspace
@@ -43,6 +49,12 @@ class ChatEvidence(BaseModel):
     section: str | None = None
     title: str | None = None
     url: str | None = None
+    bbox: list[float] | None = None
+    page_width: float | None = None
+    page_height: float | None = None
+    document_id: str | None = None
+    provenance: str = "uploaded_pdf"
+    location_kind: str = "text"
 
 
 class RouteDecision(BaseModel):
@@ -70,6 +82,12 @@ class ChatCitation(BaseModel):
     title: str | None = None
     url: str | None = None
     excerpt: str = ""
+    bbox: list[float] | None = None
+    page_width: float | None = None
+    page_height: float | None = None
+    document_id: str | None = None
+    provenance: str = "uploaded_pdf"
+    location_kind: str = "text"
 
 
 class ChatVerification(BaseModel):
@@ -106,6 +124,7 @@ class PaperChatState(TypedDict, total=False):
     cited_evidence_ids: list[str]
     verification: dict[str, Any]
     repair_attempts: int
+    retrieval_query: str
     trace: list[dict[str, Any]]
 
 
@@ -273,89 +292,98 @@ def retrieve_paper_evidence(
     route: RouteDecision,
     *,
     max_items: int = 10,
+    workspace: Workspace | None = None,
 ) -> list[ChatEvidence]:
-    terms = _question_terms(question)
-    phrase = " ".join(terms[:4])
+    records = build_evidence_records(parsed, workspace)
+    records = [r for r in records if evidence_allowed(r, question)]
+    ranked, diagnostics = search_records(records, question, max_items + 5, workspace)
     sections = _page_section_map(parsed)
-    candidates: list[ChatEvidence] = []
-
-    for page, text in parsed.page_text.items():
-        for index, paragraph in enumerate(_paragraphs(text), start=1):
-            score = _text_score(paragraph, terms, phrase)
-            if page <= 2:
-                score += 0.35
-            candidates.append(
-                ChatEvidence(
-                    id=f"P{page}.{index}",
-                    source="paper",
-                    kind="page",
-                    text=paragraph,
-                    score=score,
-                    page=page,
-                    section=sections.get(page),
-                )
-            )
-
-    candidates.sort(key=lambda item: (item.score, -(item.page or 0)), reverse=True)
-    selected = candidates[:max_items]
-
-    if "math" in route.specialists:
-        equations = sorted(
-            parsed.equation_cards,
-            key=lambda card: _text_score(card.raw, terms, phrase),
-            reverse=True,
-        )[:5]
-        selected.extend(
-            ChatEvidence(
-                id=f"EQ:{card.id}",
-                source="paper",
-                kind="equation",
-                text=card.raw,
-                score=_text_score(card.raw, terms, phrase) + 1,
-                page=card.page,
-                section=sections.get(card.page or 0),
-                title=f"Equation {card.id}",
-            )
-            for card in equations
-        )
-
+    selected = [
+        ChatEvidence(**dict(item, section=sections.get(item.get("page")) or item.get("section")))
+        for item in ranked
+    ]
     if "experiments" in route.specialists:
-        for card in parsed.table_cards[:10]:
-            text = f"{card.caption}\n{card.raw_text}".strip()
-            selected.append(
-                ChatEvidence(
-                    id=f"TABLE:{card.id}",
-                    source="paper",
-                    kind="table",
-                    text=text[:1400],
-                    score=_text_score(text, terms, phrase) + 1,
-                    page=card.page,
-                    section=sections.get(card.page),
-                    title=card.caption or card.id,
-                )
-            )
-        for card in parsed.figure_cards[:10]:
-            text = f"{card.caption}\n{card.surrounding_text}".strip()
-            selected.append(
-                ChatEvidence(
-                    id=f"FIG:{card.id}",
-                    source="paper",
-                    kind="figure",
-                    text=text[:1400],
-                    score=_text_score(text, terms, phrase) + 1,
-                    page=card.page,
-                    section=sections.get(card.page),
-                    title=card.caption or card.id,
-                )
-            )
+        pages = {e.page for e in selected[:5] if e.kind == "page"}
+        known = {e.id for e in selected}
+        visuals = [
+            r
+            for r in records
+            if r["kind"] in {"figure", "table"} and r.get("page") in pages and r["id"] not in known
+        ]
+        selected.extend(ChatEvidence(**r) for r in visuals[:4])
+    # Attach a small amount of adjacent original text for assumptions and definitions.
+    known_ids = {e.id for e in selected}
+    positions = {r["id"]: i for i, r in enumerate(records)}
+    for item in selected[:3]:
+        position = positions[item.id]
+        for i in (position - 1, position + 1):
+            if 0 <= i < len(records):
+                neighbor = records[i]
+                if (
+                    neighbor["kind"] == "page"
+                    and neighbor.get("page") == item.page
+                    and neighbor["id"] not in known_ids
+                ):
+                    selected.append(ChatEvidence(**dict(neighbor, section=sections.get(item.page))))
+                    known_ids.add(neighbor["id"])
+    # Retrieve definitions/prose first, then include equations on their supporting
+    # pages even when a formula contains no natural-language query words.
+    if "math" in route.specialists:
+        supporting_pages = {item.page for item in selected if item.kind == "page"}
+        known = {item.id for item in selected}
+        for item in records:
+            if (
+                item["kind"] == "equation"
+                and item.get("page") in supporting_pages
+                and item["id"] not in known
+            ):
+                selected.append(ChatEvidence(**item))
+                if sum(e.kind == "equation" for e in selected) >= 5:
+                    break
+    if workspace:
+        for item in selected:
+            if item.kind == "equation":
+                artifact_id = item.id.removeprefix("EQ:")
+                if re.fullmatch(r"[A-Za-z0-9_-]+", artifact_id):
+                    artifact = workspace.path(f"math/artifacts/{artifact_id}.json")
+                    if artifact.exists():
+                        try:
+                            data = json.loads(artifact.read_text(encoding="utf-8"))
+                            same_region = (
+                                data.get("raw_equation") == item.text
+                                and data.get("page") == item.page
+                                and data.get("layout_evidence", {}).get("bbox") == item.bbox
+                            )
+                            if data.get("document_id") == item.document_id and same_region:
+                                from paper_agent.equation_tutor import load_correction
 
-    deduped: dict[str, ChatEvidence] = {}
-    for item in sorted(selected, key=lambda value: value.score, reverse=True):
-        deduped.setdefault(item.id, item)
-    artifact_budget = 8 if len(route.specialists) > 1 else 5
-    pages = [item for item in deduped.values() if item.kind == "page"][:max_items]
-    artifacts = [item for item in deduped.values() if item.kind != "page"][:artifact_budget]
-    return pages + artifacts
+                                correction = load_correction(
+                                    workspace, item.page, item.text, {"bbox": item.bbox}
+                                )
+                                if correction and correction.get("latex") != data.get(
+                                    "display_latex"
+                                ):
+                                    item.text += (
+                                        "\nReader-corrected notation: " + correction["latex"]
+                                    )
+                                    item.text += "\nPrevious explanation is stale. Retrieve definitions again before interpreting."
+                                    continue
+                                item.text += "\nTranscription status: " + str(data.get("status"))
+                                if data.get("status") != "transcription_review_required":
+                                    item.text += "\nSelected notation: " + str(
+                                        data.get("display_latex")
+                                    )
+                                    item.text += "\nGrounded symbols: " + json.dumps(
+                                        data.get("symbols", []), ensure_ascii=False
+                                    )
+                                else:
+                                    item.text += "\nDo not interpret this equation; notation requires correction."
+                        except (OSError, ValueError):
+                            pass
+        workspace.write_json(
+            "retrieval/latest.json", dict(diagnostics, query=question, ids=[i.id for i in selected])
+        )
+    return selected
 
 
 def _normalize_tavily_response(response: Any) -> list[dict[str, Any]]:
@@ -645,6 +673,13 @@ def _invoke_specialist(
     evidence: list[ChatEvidence],
     memory: list[dict[str, Any]],
 ) -> SpecialistOutput:
+    if not evidence:
+        return SpecialistOutput(
+            specialist=specialist,
+            answer="I could not locate supporting evidence in this paper. Select the relevant passage, equation or figure, or rephrase the question.",
+            uncertainties=["No matching paper evidence was retrieved."],
+            model="retrieval-abstention",
+        )
     skill_name = SPECIALIST_SKILLS[specialist]
     instructions = _skill_instructions(skill_name)
     evidence_text = _format_evidence(evidence)
@@ -680,6 +715,22 @@ Return one JSON object with exactly these fields:
 Do not cite an ID that is absent from the packet. Do not wrap the JSON in prose.
 """.strip()
     config = _model_config(parsed, workspace, specialist)
+    from dataclasses import replace
+
+    from paper_agent.visual_evidence import visual_cache_key, visual_messages
+
+    model_input, attached_pages = (
+        visual_messages(parsed, evidence, prompt) if specialist == "experiments" else (prompt, [])
+    )
+    if attached_pages:
+        config = replace(config, model=os.getenv("PAPER_READER_VISUAL_MODEL", "qwen3.5:4b"))
+    cache_key = visual_cache_key(parsed, prompt, evidence, config.model)
+    cache_path = workspace.path(f"chat/specialists/{cache_key}-{specialist}.json")
+    if cache_path.exists():
+        try:
+            return SpecialistOutput(**json.loads(cache_path.read_text(encoding="utf-8")))
+        except (ValueError, TypeError):
+            pass
     record_context_usage(
         workspace,
         workflow=f"paper_chat_{specialist}",
@@ -694,7 +745,7 @@ Do not cite an ID that is absent from the packet. Do not wrap the JSON in prose.
         getattr(
             invoke_observed(
                 model,
-                prompt,
+                model_input,
                 name=f"paper-chat-{specialist}-specialist",
                 model=f"{config.model_provider}:{config.model}",
                 metadata={"specialist": specialist, "skill": skill_name},
@@ -706,7 +757,7 @@ Do not cite an ID that is absent from the packet. Do not wrap the JSON in prose.
     payload = _extract_json(raw)
     if payload:
         cited = [str(item) for item in payload.get("cited_evidence_ids", [])]
-        return SpecialistOutput(
+        output = SpecialistOutput(
             specialist=specialist,
             answer=str(payload.get("answer") or "").strip() or raw,
             cited_evidence_ids=cited,
@@ -714,6 +765,8 @@ Do not cite an ID that is absent from the packet. Do not wrap the JSON in prose.
             uncertainties=[str(item) for item in payload.get("uncertainties", [])][:12],
             model=config.model,
         )
+        workspace.write_json(f"chat/specialists/{cache_key}-{specialist}.json", output.model_dump())
+        return output
     return SpecialistOutput(
         specialist=specialist,
         answer=raw or "The specialist returned no usable answer.",
@@ -858,6 +911,12 @@ def _citation_records(cited_ids: list[str], evidence: list[ChatEvidence]) -> lis
                 title=item.title,
                 url=item.url,
                 excerpt=item.text[:6000],
+                bbox=item.bbox,
+                page_width=item.page_width,
+                page_height=item.page_height,
+                document_id=item.document_id,
+                provenance=item.provenance,
+                location_kind=item.location_kind,
             )
         )
     return records
@@ -880,8 +939,23 @@ class PaperChatWorkflow:
         started = time.monotonic()
         route = RouteDecision(**state["route"])
         max_items = 14 if state.get("mode") in {"deep", "explore"} else 9
+        retrieval_query = state.get("retrieval_query") or resolve_query(
+            state["question"], state.get("history", [])
+        )
         evidence = retrieve_paper_evidence(
-            self.parsed, state["question"], route, max_items=max_items
+            self.parsed, retrieval_query, route, max_items=max_items, workspace=self.workspace
+        )
+        _progress(
+            self.progress,
+            "evidence_preview",
+            json.dumps(
+                {
+                    "citations": [
+                        item.model_dump()
+                        for item in _citation_records([e.id for e in evidence[:5]], evidence)
+                    ]
+                }
+            ),
         )
         for item in retrieve_source(self.parsed, self.workspace, state["question"]):
             evidence.append(
@@ -910,6 +984,37 @@ class PaperChatWorkflow:
                     url=item.get("url"),
                 )
             )
+        from paper_agent.fulltext_sources import load_fulltext, search_scholarly_snippets
+
+        external = load_fulltext(self.parsed, self.workspace)
+        fulltext_hits, _ = search_records(external.get("items", []), retrieval_query, 3)
+        for item in fulltext_hits:
+            evidence.append(
+                ChatEvidence(
+                    id=item["id"],
+                    source="web",
+                    kind="web",
+                    text="External OpenAlex TEI copy; exact uploaded version not verified.\n"
+                    + item["text"],
+                    section=item.get("section"),
+                    url=external.get("url"),
+                    provenance="openalex_unverified_copy",
+                )
+            )
+        if route.needs_web:
+            try:
+                for item in search_scholarly_snippets(retrieval_query, self.workspace):
+                    evidence.append(
+                        ChatEvidence(
+                            id=item["id"],
+                            source="web",
+                            kind="web",
+                            text=json.dumps(item, ensure_ascii=False)[:3500],
+                            provenance="semantic_scholar_snippet",
+                        )
+                    )
+            except Exception:
+                pass
         if "lineage" in route.specialists:
             lineage = build_research_lineage(self.parsed, self.workspace, state["question"])
             for relation in lineage.relations:
@@ -1001,6 +1106,20 @@ class PaperChatWorkflow:
         result = _invoke_synthesis(
             self.parsed, self.workspace, state["question"], history, evidence, outputs
         )
+        _progress(
+            self.progress,
+            "answer_preview",
+            json.dumps(
+                {
+                    "answer": result.answer,
+                    "citations": [
+                        item.model_dump()
+                        for item in _citation_records(result.cited_evidence_ids, evidence)
+                    ],
+                    "verification_pending": True,
+                }
+            ),
+        )
         return {
             "answer": result.answer,
             "cited_evidence_ids": list(
@@ -1058,6 +1177,22 @@ class PaperChatWorkflow:
             # Keep the answer inspectable, but never mark an unchecked paraphrase supported.
             return []
 
+    def _recover_node(self, state: PaperChatState) -> dict[str, Any]:
+        claims = state.get("verification", {}).get("claims", [])
+        gaps = [str(c.get("claim", ""))[:300] for c in claims if c.get("status") == "unresolved"][
+            :3
+        ]
+        return {
+            "retrieval_query": state["question"] + "\nEvidence gaps: " + " ".join(gaps),
+            "repair_attempts": 1,
+            "trace": _trace(
+                state,
+                "retrieval_repair",
+                "Searching once more for missing evidence.",
+                time.monotonic(),
+            ),
+        }
+
     def compile(self):
         graph = StateGraph(PaperChatState)
         graph.add_node("route", self._route_node)
@@ -1065,12 +1200,29 @@ class PaperChatWorkflow:
         graph.add_node("specialists", self._specialist_node)
         graph.add_node("synthesize", self._synthesis_node)
         graph.add_node("verify", self._verify_node)
+        graph.add_node("recover", self._recover_node)
         graph.add_edge(START, "route")
         graph.add_edge("route", "retrieve")
         graph.add_edge("retrieve", "specialists")
         graph.add_edge("specialists", "synthesize")
         graph.add_edge("synthesize", "verify")
-        graph.add_edge("verify", END)
+        graph.add_conditional_edges(
+            "verify",
+            lambda state: (
+                "recover"
+                if (
+                    state.get("mode") in {"deep", "explore"}
+                    and not state.get("repair_attempts")
+                    and any(
+                        c.get("status") == "unresolved"
+                        for c in state.get("verification", {}).get("claims", [])
+                    )
+                )
+                else "end"
+            ),
+            {"recover": "recover", "end": END},
+        )
+        graph.add_edge("recover", "retrieve")
         return graph.compile()
 
 

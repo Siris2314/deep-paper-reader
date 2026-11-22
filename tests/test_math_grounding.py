@@ -45,6 +45,10 @@ def test_extracts_complete_focal_loss_symbol_set():
     assert r"I_{t,s}" in symbols
 
 
+def test_numeric_power_is_grounded_as_base_symbol():
+    assert extract_latex_symbols(r"s = x^2 + y") == ["x", "y"]
+
+
 def test_position_sensitive_grounding_resolves_paper_definitions():
     bundle = build_math_context(focal_paper(), 7, FOCAL_LATEX, "focal loss")
     meanings = {item.symbol: item for item in bundle.symbols}

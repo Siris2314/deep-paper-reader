@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "description": "Curated equation regions from two local primary-source PDFs. Labels cover transcription, region boundaries, symbol inventory, nearby definitions, and equation role.",
+  "cases": [
+    {
+      "id": "dpo-eq-01",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 3, "equation_label": "1"},
+      "requires_vision": true,
+      "input": {"observed_text": "p∗(y1 ≻ y2 | x) = exp(r∗(x,y1)) / (exp(r∗(x,y1)) + exp(r∗(x,y2)))", "geometry_latex": "p^{*}(y_1 \\succ y_2 \\mid x)=\\frac{\\exp(r^{*}(x,y_1))}{\\exp(r^{*}(x,y_1))+\\exp(r^{*}(x,y_2))}", "geometry_symbols": ["p^{*}", "y_1", "y_2", "x", "r^{*}"], "predicted_role": "Bradley-Terry preference probability", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "p^{*}(y_1 \\succ y_2 \\mid x)=\\frac{\\exp(r^{*}(x,y_1))}{\\exp(r^{*}(x,y_1))+\\exp(r^{*}(x,y_2))}", "symbols": ["p^{*}", "y_1", "y_2", "x", "r^{*}"], "nearby_definitions": ["The Bradley-Terry model defines the human preference distribution using a latent reward model."], "role": "Bradley-Terry preference probability", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-02",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 3, "equation_label": "2"},
+      "requires_vision": false,
+      "input": {"observed_text": "LR(rϕ,D) = -E log σ(rϕ(x,yw)-rϕ(x,yl))", "geometry_latex": "\\mathcal{L}_R(r_\\phi,\\mathcal{D})=-\\mathbb{E}_{(x,y_w,y_l)\\sim\\mathcal{D}}[\\log\\sigma(r_\\phi(x,y_w)-r_\\phi(x,y_l))]", "geometry_symbols": ["\\mathcal{L}_R", "r_\\phi", "\\mathcal{D}", "x", "y_w", "y_l"], "predicted_role": "reward-model negative log-likelihood", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\mathcal{L}_R(r_\\phi,\\mathcal{D})=-\\mathbb{E}_{(x,y_w,y_l)\\sim\\mathcal{D}}[\\log\\sigma(r_\\phi(x,y_w)-r_\\phi(x,y_l))]", "symbols": ["\\mathcal{L}_R", "r_\\phi", "\\mathcal{D}", "x", "y_w", "y_l"], "nearby_definitions": ["y_w and y_l denote the preferred and dispreferred completions; sigma is the logistic function."], "role": "reward-model negative log-likelihood", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-03",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 3, "equation_label": "3"},
+      "requires_vision": true,
+      "input": {"observed_text": "maxπθ E[rϕ(x,y)] - β DKL[πθ||πref]", "geometry_latex": "\\max_{\\pi_\\theta}\\;\\mathbb{E}_{x\\sim\\mathcal{D},y\\sim\\pi_\\theta(y\\mid x)}[r_\\phi(x,y)]-\\beta D_{KL}[\\pi_\\theta(y\\mid x)\\|\\pi_{ref}(y\\mid x)]", "geometry_symbols": ["\\pi_\\theta", "\\mathcal{D}", "r_\\phi", "\\beta", "\\pi_{ref}"], "predicted_role": "KL-constrained RLHF objective", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\max_{\\pi_\\theta}\\;\\mathbb{E}_{x\\sim\\mathcal{D},y\\sim\\pi_\\theta(y\\mid x)}[r_\\phi(x,y)]-\\beta D_{KL}[\\pi_\\theta(y\\mid x)\\|\\pi_{ref}(y\\mid x)]", "symbols": ["\\pi_\\theta", "\\mathcal{D}", "r_\\phi", "\\beta", "\\pi_{ref}"], "nearby_definitions": ["beta controls deviation from the reference policy, initialized from the SFT model."], "role": "KL-constrained RLHF objective", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-04",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 4, "equation_label": "4"},
+      "requires_vision": true,
+      "input": {"observed_text": "πr(y|x)=1/Z(x) πref(y|x) exp(1/β r(x,y))", "geometry_latex": "\\pi_r(y\\mid x)=\\frac{1}{Z(x)}\\pi_{ref}(y\\mid x)\\exp(\\frac{1}{\\beta}r(x,y))", "geometry_symbols": ["\\pi_r", "y", "x", "Z", "\\pi_{ref}", "\\beta", "r"], "predicted_role": "closed-form optimal policy", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\pi_r(y\\mid x)=\\frac{1}{Z(x)}\\pi_{ref}(y\\mid x)\\exp(\\frac{1}{\\beta}r(x,y))", "symbols": ["\\pi_r", "y", "x", "Z", "\\pi_{ref}", "\\beta", "r"], "nearby_definitions": ["Z(x) is the partition function for the KL-constrained optimal policy."], "role": "closed-form optimal policy", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-05",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 4, "equation_label": "5"},
+      "requires_vision": false,
+      "input": {"observed_text": "r(x,y)=β log πr(y|x)/πref(y|x)+β log Z(x)", "geometry_latex": "r(x,y)=\\beta\\log\\frac{\\pi_r(y\\mid x)}{\\pi_{ref}(y\\mid x)}+\\beta\\log Z(x)", "geometry_symbols": ["r", "x", "y", "\\beta", "\\pi_r", "\\pi_{ref}", "Z"], "predicted_role": "reward reparameterization", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "r(x,y)=\\beta\\log\\frac{\\pi_r(y\\mid x)}{\\pi_{ref}(y\\mid x)}+\\beta\\log Z(x)", "symbols": ["r", "x", "y", "\\beta", "\\pi_r", "\\pi_{ref}", "Z"], "nearby_definitions": ["The reward is expressed using its corresponding optimal policy, reference policy, and partition function."], "role": "reward reparameterization", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-06",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 4, "equation_label": "6"},
+      "requires_vision": true,
+      "input": {"observed_text": "p*(y1≻y2|x)=1/(1+exp(β log π*(y2|x)/πref(y2|x)-β log π*(y1|x)/πref(y1|x)))", "geometry_latex": "p^{*}(y_1\\succ y_2\\mid x)=\\frac{1}{1+\\exp(\\beta\\log\\frac{\\pi^{*}(y_2\\mid x)}{\\pi_{ref}(y_2\\mid x)}-\\beta\\log\\frac{\\pi^{*}(y_1\\mid x)}{\\pi_{ref}(y_1\\mid x)})}", "geometry_symbols": ["p^{*}", "y_1", "y_2", "x", "\\beta", "\\pi^{*}", "\\pi_{ref}"], "predicted_role": "policy-parameterized preference probability", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "p^{*}(y_1\\succ y_2\\mid x)=\\frac{1}{1+\\exp(\\beta\\log\\frac{\\pi^{*}(y_2\\mid x)}{\\pi_{ref}(y_2\\mid x)}-\\beta\\log\\frac{\\pi^{*}(y_1\\mid x)}{\\pi_{ref}(y_1\\mid x)})}", "symbols": ["p^{*}", "y_1", "y_2", "x", "\\beta", "\\pi^{*}", "\\pi_{ref}"], "nearby_definitions": ["The partition function cancels when the Bradley-Terry model takes a difference of rewards."], "role": "policy-parameterized preference probability", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-07",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 4, "equation_label": "7"},
+      "requires_vision": true,
+      "input": {"observed_text": "LDPO=-E log σ(β log πθ(yw|x)/πref(yw|x)-β log πθ(yl|x)/πref(yl|x))", "geometry_latex": "\\mathcal{L}_{DPO}(\\pi_\\theta;\\pi_{ref})=-\\mathbb{E}_{(x,y_w,y_l)\\sim\\mathcal{D}}[\\log\\sigma(\\beta\\log\\frac{\\pi_\\theta(y_w\\mid x)}{\\pi_{ref}(y_w\\mid x)}-\\beta\\log\\frac{\\pi_\\theta(y_l\\mid x)}{\\pi_{ref}(y_l\\mid x)})]", "geometry_symbols": ["\\mathcal{L}_{DPO}", "\\pi_\\theta", "\\pi_{ref}", "x", "y_w", "y_l", "\\mathcal{D}", "\\beta"], "predicted_role": "direct preference optimization objective", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\mathcal{L}_{DPO}(\\pi_\\theta;\\pi_{ref})=-\\mathbb{E}_{(x,y_w,y_l)\\sim\\mathcal{D}}[\\log\\sigma(\\beta\\log\\frac{\\pi_\\theta(y_w\\mid x)}{\\pi_{ref}(y_w\\mid x)}-\\beta\\log\\frac{\\pi_\\theta(y_l\\mid x)}{\\pi_{ref}(y_l\\mid x)})]", "symbols": ["\\mathcal{L}_{DPO}", "\\pi_\\theta", "\\pi_{ref}", "x", "y_w", "y_l", "\\mathcal{D}", "\\beta"], "nearby_definitions": ["The objective fits an implicit reward while the optimal policy is pi_theta."], "role": "direct preference optimization objective", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-08",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 5, "equation_label": "gradient following Eq. 7"},
+      "requires_vision": true,
+      "input": {"observed_text": "∇θLDPO=-βE[σ(rhatθ(x,yl)-rhatθ(x,yw))[∇θlogπ(yw|x)-∇θlogπ(yl|x)]]", "geometry_latex": "\\nabla_\\theta\\mathcal{L}_{DPO}=-\\beta\\mathbb{E}[\\sigma(\\hat r_\\theta(x,y_l)-\\hat r_\\theta(x,y_w))[\\nabla_\\theta\\log\\pi(y_w\\mid x)-\\nabla_\\theta\\log\\pi(y_l\\mid x)]]", "geometry_symbols": ["\\theta", "\\mathcal{L}_{DPO}", "\\beta", "\\hat r_\\theta", "x", "y_l", "y_w", "\\pi"], "predicted_role": "DPO gradient update", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\nabla_\\theta\\mathcal{L}_{DPO}=-\\beta\\mathbb{E}[\\sigma(\\hat r_\\theta(x,y_l)-\\hat r_\\theta(x,y_w))[\\nabla_\\theta\\log\\pi(y_w\\mid x)-\\nabla_\\theta\\log\\pi(y_l\\mid x)]]", "symbols": ["\\theta", "\\mathcal{L}_{DPO}", "\\beta", "\\hat r_\\theta", "x", "y_l", "y_w", "\\pi"], "nearby_definitions": ["The weighting is larger when the implicit reward incorrectly orders the completions."], "role": "DPO gradient update", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-09",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 6, "equation_label": "8"},
+      "requires_vision": true,
+      "input": {"observed_text": "f(r;πref,β)(x,y)=r(x,y)-β log Σy πref(y|x) exp(1/β r(x,y))", "geometry_latex": "f(r;\\pi_{ref},\\beta)(x,y)=r(x,y)-\\beta\\log\\sum_y\\pi_{ref}(y\\mid x)\\exp(\\frac{1}{\\beta}r(x,y))", "geometry_symbols": ["f", "r", "\\pi_{ref}", "\\beta", "x", "y"], "predicted_role": "reward-class projection operator", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "f(r;\\pi_{ref},\\beta)(x,y)=r(x,y)-\\beta\\log\\sum_y\\pi_{ref}(y\\mid x)\\exp(\\frac{1}{\\beta}r(x,y))", "symbols": ["f", "r", "\\pi_{ref}", "\\beta", "x", "y"], "nearby_definitions": ["The operator normalizes a reward by the logarithm of the partition function."], "role": "reward-class projection operator", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "dpo-eq-10",
+      "source": {"paper_id": "arXiv:2305.18290", "title": "Direct Preference Optimization: Your Language Model is Secretly a Reward Model", "page": 6, "equation_label": "9"},
+      "requires_vision": false,
+      "input": {"observed_text": "Σy πref(y|x) exp(1/β r(x,y)) = 1", "geometry_latex": "\\sum_y\\pi_{ref}(y\\mid x)\\exp(\\frac{1}{\\beta}r(x,y))=1", "geometry_symbols": ["y", "\\pi_{ref}", "x", "\\beta", "r"], "predicted_role": "reward normalization constraint", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\sum_y\\pi_{ref}(y\\mid x)\\exp(\\frac{1}{\\beta}r(x,y))=1", "symbols": ["y", "\\pi_{ref}", "x", "\\beta", "r"], "nearby_definitions": ["The reparameterized policy must be a valid distribution whose probabilities sum to one."], "role": "reward normalization constraint", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-01",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 3, "equation_label": "1"},
+      "requires_vision": false,
+      "input": {"observed_text": "cQt = ht · W DQ", "geometry_latex": "c_t^Q=h_t\\cdot W^{DQ}", "geometry_symbols": ["c_t^Q", "h_t", "W^{DQ}"], "predicted_role": "low-rank query down-projection", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "c_t^Q=h_t\\cdot W^{DQ}", "symbols": ["c_t^Q", "h_t", "W^{DQ}"], "nearby_definitions": ["h_t is the current query-token hidden state and W^{DQ} is the down-projection matrix."], "role": "low-rank query down-projection", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-02",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 3, "equation_label": "2"},
+      "requires_vision": true,
+      "input": {"observed_text": "[q^l_t,1;...;q^l_t,n_h^l]=q_t^l=c_t^Q·W^{IUQ}", "geometry_latex": "[q_{t,1}^l;q_{t,2}^l;\\ldots;q_{t,n_h^l}^l]=q_t^l=c_t^Q\\cdot W^{IUQ}", "geometry_symbols": ["q_{t,1}^l", "q_t^l", "n_h^l", "c_t^Q", "W^{IUQ}"], "predicted_role": "per-head query up-projection", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "[q_{t,1}^l;q_{t,2}^l;\\ldots;q_{t,n_h^l}^l]=q_t^l=c_t^Q\\cdot W^{IUQ}", "symbols": ["q_{t,1}^l", "q_t^l", "n_h^l", "c_t^Q", "W^{IUQ}"], "nearby_definitions": ["W^{IUQ} is the up-projection matrix for the lookahead query representation."], "role": "per-head query up-projection", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-03",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 3, "equation_label": "3"},
+      "requires_vision": true,
+      "input": {"observed_text": "[w^l_t,1;...;w^l_t,n_h^l]=w_t^l=h_t·W^w", "geometry_latex": "[w_{t,1}^l;w_{t,2}^l;\\ldots;w_{t,n_h^l}^l]=w_t^l=h_t\\cdot W^w", "geometry_symbols": ["w_{t,1}^l", "w_t^l", "n_h^l", "h_t", "W^w"], "predicted_role": "routing-head weight projection", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "[w_{t,1}^l;w_{t,2}^l;\\ldots;w_{t,n_h^l}^l]=w_t^l=h_t\\cdot W^w", "symbols": ["w_{t,1}^l", "w_t^l", "n_h^l", "h_t", "W^w"], "nearby_definitions": ["W^w is learnable and w_{t,h}^l scales the importance of the h-th indexer head."], "role": "routing-head weight projection", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-04",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 4, "equation_label": "4"},
+      "requires_vision": true,
+      "input": {"observed_text": "It,s=σ(Σ_h w^l_t,h · ReLU(q^l_t,h · (K^IComp_s)^T))", "geometry_latex": "I_{t,s}=\\sigma(\\sum_{h=1}^{n_h^l}w_{t,h}^l\\cdot\\operatorname{ReLU}(q_{t,h}^l\\cdot(K_s^{IComp})^T))", "geometry_symbols": ["I_{t,s}", "n_h^l", "w_{t,h}^l", "q_{t,h}^l", "K_s^{IComp}"], "predicted_role": "lookahead index score", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "I_{t,s}=\\sigma(\\sum_{h=1}^{n_h^l}w_{t,h}^l\\cdot\\operatorname{ReLU}(q_{t,h}^l\\cdot(K_s^{IComp})^T))", "symbols": ["I_{t,s}", "n_h^l", "w_{t,h}^l", "q_{t,h}^l", "K_s^{IComp}"], "nearby_definitions": ["I_{t,s} scores a preceding compressed entry and sigma maps the result into the zero-to-one range."], "role": "lookahead index score", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-05",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 4, "equation_label": "5"},
+      "requires_vision": false,
+      "input": {"observed_text": "C_t^MemComp={C_s^Comp | I_t,s≥0.5}", "geometry_latex": "C_t^{MemComp}=\\{C_s^{Comp}\\mid I_{t,s}\\geq0.5\\}", "geometry_symbols": ["C_t^{MemComp}", "C_s^{Comp}", "I_{t,s}"], "predicted_role": "threshold-based memory selection", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "C_t^{MemComp}=\\{C_s^{Comp}\\mid I_{t,s}\\geq0.5\\}", "symbols": ["C_t^{MemComp}", "C_s^{Comp}", "I_{t,s}"], "nearby_definitions": ["C^{Comp} denotes pre-computed compressed KV entries fetched from the CPU cold pool."], "role": "threshold-based memory selection", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-06",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 4, "equation_label": "6"},
+      "requires_vision": true,
+      "input": {"observed_text": "C_i^CoreComp={C_s^Comp∈C_t^MemComp | Score_native(i,s)∈Top-k}", "geometry_latex": "C_i^{CoreComp}=\\{C_s^{Comp}\\in C_t^{MemComp}\\mid\\operatorname{Score}_{native}(i,s)\\in\\operatorname{Top-k}\\}", "geometry_symbols": ["C_i^{CoreComp}", "C_s^{Comp}", "C_t^{MemComp}", "i", "s"], "predicted_role": "fine-grained core-entry selection", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "C_i^{CoreComp}=\\{C_s^{Comp}\\in C_t^{MemComp}\\mid\\operatorname{Score}_{native}(i,s)\\in\\operatorname{Top-k}\\}", "symbols": ["C_i^{CoreComp}", "C_s^{Comp}", "C_t^{MemComp}", "i", "s"], "nearby_definitions": ["The native Lightning Indexer applies Top-k only within the fetched memory subset."], "role": "fine-grained core-entry selection", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-07",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 5, "equation_label": "7"},
+      "requires_vision": false,
+      "input": {"observed_text": "P_i,l,s=exp(S_i,l,s)/Σ_j exp(S_i,l,j)", "geometry_latex": "P_{i,l,s}=\\frac{\\exp(S_{i,l,s})}{\\sum_j\\exp(S_{i,l,j})}", "geometry_symbols": ["P_{i,l,s}", "S_{i,l,s}", "j"], "predicted_role": "softmax normalization", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "P_{i,l,s}=\\frac{\\exp(S_{i,l,s})}{\\sum_j\\exp(S_{i,l,j})}", "symbols": ["P_{i,l,s}", "S_{i,l,s}", "j"], "nearby_definitions": ["S_{i,l,s} is the raw indexer logit for entry s at token i and layer l."], "role": "softmax normalization", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-08",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 5, "equation_label": "8"},
+      "requires_vision": true,
+      "input": {"observed_text": "M_i,l={s | Σ_{j∈Sorted(P_i,l,:)}P_i,l,j≤p}", "geometry_latex": "\\mathcal{M}_{i,l}=\\{s\\mid\\sum_{j\\in\\operatorname{Sorted}(P_{i,l,:})}P_{i,l,j}\\leq p\\}", "geometry_symbols": ["\\mathcal{M}_{i,l}", "s", "j", "P_{i,l,:}", "p"], "predicted_role": "top-p layer selection set", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\mathcal{M}_{i,l}=\\{s\\mid\\sum_{j\\in\\operatorname{Sorted}(P_{i,l,:})}P_{i,l,j}\\leq p\\}", "symbols": ["\\mathcal{M}_{i,l}", "s", "j", "P_{i,l,:}", "p"], "nearby_definitions": ["The nucleus threshold is p=0.6 and retains the minimum high-confidence set."], "role": "top-p layer selection set", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-09",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 5, "equation_label": "9"},
+      "requires_vision": false,
+      "input": {"observed_text": "V_i,s=Σ_l=1^L I(s∈M_i,l)", "geometry_latex": "V_{i,s}=\\sum_{l=1}^{L}\\mathbb{I}(s\\in\\mathcal{M}_{i,l})", "geometry_symbols": ["V_{i,s}", "L", "s", "\\mathcal{M}_{i,l}"], "predicted_role": "cross-layer voting score", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "V_{i,s}=\\sum_{l=1}^{L}\\mathbb{I}(s\\in\\mathcal{M}_{i,l})", "symbols": ["V_{i,s}", "L", "s", "\\mathcal{M}_{i,l}"], "nearby_definitions": ["The indicator counts how many of the L layers select entry s."], "role": "cross-layer voting score", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-10",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 5, "equation_label": "10"},
+      "requires_vision": false,
+      "input": {"observed_text": "A_i^golden={s | V_i,s≥3}", "geometry_latex": "A_i^{golden}=\\{s\\mid V_{i,s}\\geq3\\}", "geometry_symbols": ["A_i^{golden}", "s", "V_{i,s}"], "predicted_role": "majority-vote golden-entry set", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "A_i^{golden}=\\{s\\mid V_{i,s}\\geq3\\}", "symbols": ["A_i^{golden}", "s", "V_{i,s}"], "nearby_definitions": ["An entry is golden only if at least three layers vote for it."], "role": "majority-vote golden-entry set", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-11",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 5, "equation_label": "11"},
+      "requires_vision": true,
+      "input": {"observed_text": "Y_t^+=⋃_{i=t}^{t+τ-1}A_i^golden", "geometry_latex": "Y_t^{+}=\\bigcup_{i=t}^{t+\\tau-1}A_i^{golden}", "geometry_symbols": ["Y_t^{+}", "i", "t", "\\tau", "A_i^{golden}"], "predicted_role": "future-window positive-label union", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "Y_t^{+}=\\bigcup_{i=t}^{t+\\tau-1}A_i^{golden}", "symbols": ["Y_t^{+}", "i", "t", "\\tau", "A_i^{golden}"], "nearby_definitions": ["Y_t^+ unions denoised golden entries across the lookahead window of tau steps."], "role": "future-window positive-label union", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-12",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 6, "equation_label": "12"},
+      "requires_vision": false,
+      "input": {"observed_text": "ℓ_BCE(p,y)=-(y log p+(1-y)log(1-p))", "geometry_latex": "\\ell_{BCE}(p,y)=-[y\\log p+(1-y)\\log(1-p)]", "geometry_symbols": ["\\ell_{BCE}", "p", "y"], "predicted_role": "per-sample binary cross-entropy", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\ell_{BCE}(p,y)=-[y\\log p+(1-y)\\log(1-p)]", "symbols": ["\\ell_{BCE}", "p", "y"], "nearby_definitions": ["p is a predicted probability and y is a binary label."], "role": "per-sample binary cross-entropy", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-13",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 6, "equation_label": "13"},
+      "requires_vision": true,
+      "input": {"observed_text": "C_t^MemComp=⋃_{l∈{10,12,20}}{C_s^Comp | I_t,s^(l)≥0.5}", "geometry_latex": "C_t^{MemComp}=\\bigcup_{l\\in\\{10,12,20\\}}\\{C_s^{Comp}\\mid I_{t,s}^{(l)}\\geq0.5\\}", "geometry_symbols": ["C_t^{MemComp}", "l", "C_s^{Comp}", "I_{t,s}^{(l)}"], "predicted_role": "three-layer OR routing union", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "C_t^{MemComp}=\\bigcup_{l\\in\\{10,12,20\\}}\\{C_s^{Comp}\\mid I_{t,s}^{(l)}\\geq0.5\\}", "symbols": ["C_t^{MemComp}", "l", "C_s^{Comp}", "I_{t,s}^{(l)}"], "nearby_definitions": ["Layers 10, 12, and 20 use OR-mode routing: any positive layer fetches the entry."], "role": "three-layer OR routing union", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-14",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 7, "equation_label": "14"},
+      "requires_vision": false,
+      "input": {"observed_text": "p_t,s^(correct)=p_t,s y_t,s+(1-p_t,s)(1-y_t,s)", "geometry_latex": "p_{t,s}^{(correct)}=p_{t,s}y_{t,s}+(1-p_{t,s})(1-y_{t,s})", "geometry_symbols": ["p_{t,s}^{(correct)}", "p_{t,s}", "y_{t,s}"], "predicted_role": "correct-class confidence", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "p_{t,s}^{(correct)}=p_{t,s}y_{t,s}+(1-p_{t,s})(1-y_{t,s})", "symbols": ["p_{t,s}^{(correct)}", "p_{t,s}", "y_{t,s}"], "nearby_definitions": ["p_{t,s} is the sigmoid score and y_{t,s} is its binary label."], "role": "correct-class confidence", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    },
+    {
+      "id": "lsa-eq-15",
+      "source": {"paper_id": "arXiv:2606.09079v2", "title": "FlashMemory", "page": 7, "equation_label": "15"},
+      "requires_vision": true,
+      "input": {"observed_text": "L_FL=1/|S| Σ_{s∈S} w_t,s (1-p_t,s^(correct))^γ ℓ_BCE(I_t,s,y_t,s)", "geometry_latex": "\\mathcal{L}_{FL}=\\frac{1}{|\\mathcal{S}|}\\sum_{s\\in\\mathcal{S}}w_{t,s}(1-p_{t,s}^{(correct)})^{\\gamma}\\ell_{BCE}(I_{t,s},y_{t,s})", "geometry_symbols": ["\\mathcal{L}_{FL}", "\\mathcal{S}", "w_{t,s}", "p_{t,s}^{(correct)}", "\\gamma", "I_{t,s}", "y_{t,s}"], "predicted_role": "sample-weighted focal-loss objective", "predicted_boundary": {"region_kind": "display", "complete": true, "equation_count": 1}},
+      "expected": {"latex": "\\mathcal{L}_{FL}=\\frac{1}{|\\mathcal{S}|}\\sum_{s\\in\\mathcal{S}}w_{t,s}(1-p_{t,s}^{(correct)})^{\\gamma}\\ell_{BCE}(I_{t,s},y_{t,s})", "symbols": ["\\mathcal{L}_{FL}", "\\mathcal{S}", "w_{t,s}", "p_{t,s}^{(correct)}", "\\gamma", "I_{t,s}", "y_{t,s}"], "nearby_definitions": ["gamma=2 down-weights easy examples and w_{t,s} is a per-sample weight."], "role": "sample-weighted focal-loss objective", "boundary": {"region_kind": "display", "complete": true, "equation_count": 1}}
+    }
+  ]
+}

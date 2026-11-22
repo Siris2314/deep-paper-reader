@@ -397,6 +397,36 @@ def extract_math_regions(
             display_groups[-1].extend(row)
         else:
             display_groups.append(list(row))
+    # Separate numbered equations before reconstructing scripts. Adjacent display
+    # rows can be close enough for the geometry grouper to merge Eq. (1) and (2).
+    # Printed labels are layout anchors, not evidence inferred from the formula.
+    equation_labels = []
+    for line in lines:
+        match = re.fullmatch(r"\s*\((\d{1,3})\)\s*", line["text"])
+        if match:
+            box = line["bbox"]
+            equation_labels.append((match[1], (box[1] + box[3]) / 2, box[0]))
+    separated = []
+    for group in display_groups:
+        box = _union([item["bbox"] for item in group])
+        labels = sorted(
+            [
+                label
+                for label in equation_labels
+                if box[1] - 5 <= label[1] <= box[3] + 5 and label[2] >= box[2] - 15
+            ],
+            key=lambda label: label[1],
+        )
+        if len(labels) > 1:
+            bins = [[] for _ in labels]
+            for line in group:
+                center = (line["bbox"][1] + line["bbox"][3]) / 2
+                nearest = min(range(len(labels)), key=lambda i: abs(center - labels[i][1]))
+                bins[nearest].append(line)
+            separated.extend(part for part in bins if part)
+        else:
+            separated.append(group)
+    display_groups = separated
     regions: list[dict[str, Any]] = []
     sorted_lines = sorted(lines, key=lambda item: (item["bbox"][1], item["bbox"][0]))
     for group in display_groups:
@@ -422,10 +452,18 @@ def extract_math_regions(
             and item["bbox"][3] <= group_box[3] + 100
         ]
         region_id = f"math-{page_number}-display-{len(regions) + 1}"
+        labels = [
+            label
+            for label in equation_labels
+            if group_box[1] - 5 <= label[1] <= group_box[3] + 5 and label[2] >= group_box[2] - 15
+        ]
+        if len(labels) == 1:
+            layout_evidence["equation_label"] = labels[0][0]
         regions.append(
             {
                 "id": region_id,
                 "kind": "display",
+                "equation_label": labels[0][0] if len(labels) == 1 else None,
                 "confidence": confidence,
                 "raw": "\n".join(row for row in raw_rows if row),
                 "context": "\n".join(nearby[:14]),

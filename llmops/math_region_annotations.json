@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "coordinate_system": "PDF points, top-left origin",
+  "annotation_note": "Manually reviewed region boxes on the rendered FlashMemory PDF page 5. Labels excluded; margin included around notation. Other cases remain unannotated for IoU.",
+  "regions": {
+    "lsa-eq-07": [260, 82, 376, 118],
+    "lsa-eq-08": [228, 181, 410, 230],
+    "lsa-eq-09": [262, 267, 375, 304],
+    "lsa-eq-11": [254, 406, 359, 453]
+  }
+}

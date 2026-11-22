@@ -64,6 +64,9 @@ def extract_latex_symbols(latex: str) -> list[str]:
     symbols: list[str] = []
     for match in _TOKEN_RE.finditer(cleaned):
         token = match.group(0)
+        # Numeric powers describe an operation on the base variable; they are not
+        # separate paper-defined symbols (x^2 should be grounded as x).
+        token = re.sub(r"\^(?:\{\d+\}|\d+)$", "", token)
         base = re.match(_BASE, token)
         if not base or base.group(0) in _SKIP_COMMANDS:
             continue
@@ -118,6 +121,7 @@ def _symbol_aliases(symbol: str) -> list[str]:
     readable = re.sub(r"\\[A-Za-z]+", "", plain)
     readable = readable.replace("^{+}", "+").replace("^+", "+")
     readable = re.sub(r"[{}\\]", "", readable)
+    readable = readable.replace("^", "")
     aliases.extend(
         variant
         for variant in {
@@ -128,9 +132,12 @@ def _symbol_aliases(symbol: str) -> list[str]:
         }
         if variant
     )
-    labels = re.findall(r"\\(?:mathrm|text)\{([^{}]+)\}|_\{([A-Za-z]{2,})\}", compact)
+    labels = re.findall(r"\\(?:mathrm|text)\{([^{}]+)\}|[_^]\{([A-Za-z]{2,})\}", compact)
     for groups in labels:
         aliases.extend(label for label in groups if label)
+    scripts = re.match(r"([A-Za-z])_\{([^{}]+)\}\^\{([^{}]+)\}$", compact)
+    if scripts:
+        aliases.extend([scripts[1] + scripts[3] + scripts[2], scripts[1] + scripts[2] + scripts[3]])
     return list(dict.fromkeys(alias for alias in aliases if alias))
 
 
@@ -151,6 +158,17 @@ def _line_windows(
         r"\b(?:denote|denotes|defined|where|parameter|weight|label|score|set|batch|loss|objective|represents?)\b",
         re.I,
     )
+    markers = sorted(parsed.section_markers, key=lambda item: int(item.get("page") or 0))
+
+    def section_at(number):
+        prior = [m for m in markers if int(m.get("page") or 0) <= number]
+        return (
+            str(prior[-1].get("label") or prior[-1].get("title") or prior[-1].get("name") or "")
+            if prior
+            else ""
+        )
+
+    focus_section = section_at(focus_page)
     for page, text in parsed.page_text.items():
         lines = [clean_line(line) for line in text.splitlines() if clean_line(line)]
         for index, line in enumerate(lines):
@@ -162,9 +180,11 @@ def _line_windows(
             if definition_terms.search(window):
                 score += 3.0
             if page == focus_page:
-                score += 2.0
+                score += 7.0
             elif abs(page - focus_page) == 1:
-                score += 0.5
+                score += 2.0
+            if focus_section:
+                score += 3.0 if section_at(page) == focus_section else -4.0
             scored.append((score, page, window[:1200]))
     scored.sort(key=lambda item: item[0], reverse=True)
     deduped: list[tuple[float, int, str]] = []
@@ -183,10 +203,15 @@ def _alias_in_text(alias: str, text: str) -> bool:
     if not clean:
         return False
     if re.fullmatch(r"[A-Za-z0-9]+", clean):
-        flags = 0 if len(clean) == 1 and clean.isupper() else re.I
+        flags = 0 if clean.isupper() or (len(clean) > 1 and not clean.islower()) else re.I
+        pattern = (
+            r"\s*".join(re.escape(char) for char in clean)
+            if len(clean) > 1 and not clean.islower()
+            else re.escape(clean)
+        )
         return bool(
             re.search(
-                rf"(?<![A-Za-z0-9]){re.escape(clean)}(?![A-Za-z0-9])",
+                rf"(?<![A-Za-z0-9]){pattern}(?![A-Za-z0-9])",
                 text,
                 flags,
             )
@@ -371,7 +396,7 @@ def build_math_context(
         aliases = _symbol_aliases(symbol)
         windows = _line_windows(parsed, aliases, page)
         best = windows[0] if windows else None
-        search_context = " ".join(item[2] for item in windows) or local
+        search_context = best[2] if best else local
         meaning, source = _known_meaning(symbol, search_context)
         if not meaning and best:
             meaning = f"The paper uses {symbol} in this equation; its nearby description is quoted as evidence."

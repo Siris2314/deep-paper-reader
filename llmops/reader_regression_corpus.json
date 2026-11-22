@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "kind": "authored_regression_not_real_papers",
+  "documents": [
+    {"id":"bayesian", "layout":"single", "pages":[
+      ["Bayesian Sensor Calibration", "The prior variance is four square volts. The posterior variance is one square volt after calibration.", "Calibration uses sixteen independent observations. Correlated measurements violate the independence assumption.", "The reported uncertainty is a standard deviation, not a confidence interval."],
+      ["The main result is a reduction in posterior uncertainty without a change to the sensor hardware.", "References", "A cited simulation achieved perfect certainty using an unrelated deterministic sensor."],
+      ["Appendix A", "The auxiliary proof assumes Gaussian sensor noise with zero mean."]
+    ]},
+    {"id":"materials", "layout":"columns", "pages":[
+      ["Thermal Coating Experiments", "The ceramic coating was tested at a temperature of 450 kelvin under dry nitrogen.", "Three specimens fractured during the second thermal cycle. Failed specimens were excluded from subsequent cycles.", "Table 1. Thermal conductivity in watts per metre kelvin", "The baseline conductivity was 18 and the coated conductivity was 12. These measurements were made at the same temperature.", "Figure 1. Conductivity as a function of specimen temperature", "The error bars show standard errors across five repeated measurements."],
+      ["Limitations", "Humidity was not varied. The coating results cannot establish performance in moist air."]
+    ]},
+    {"id":"graphs", "layout":"single", "pages":[
+      ["Deterministic Graph Routing", "The routing algorithm visits each vertex exactly once on an acyclic directed graph.", "A directed cycle invalidates the termination guarantee. The algorithm does not claim termination on cyclic graphs.", "The queue requires memory proportional to the number of vertices. Edge weights are nonnegative integers.", "The experimental graph contains 64 vertices and 128 edges."],
+      ["Appendix A", "A separate cyclic-graph experiment uses a timeout instead of a termination guarantee."]
+    ]},
+    {"id":"robotics-scan", "layout":"scan", "pages":[
+      ["Robot Wheel Calibration", "Wheel slip is estimated from an optical encoder and a downward camera.", "Calibration is performed on dry concrete. Wet surfaces were not evaluated.", "The controller updates at twenty hertz. The emergency stop bypasses the learned controller."]
+    ]},
+    {"id":"genomics-mixed", "layout":"mixed_scan", "pages":[
+      ["Read Alignment Study", "The aligner rejects sequences shorter than thirty bases before alignment.", "Ambiguous bases are masked before computing the alignment score.", "The evaluation measures alignment sensitivity. It does not measure clinical diagnosis accuracy."]
+    ]},
+    {"id":"symbols", "layout":"single", "pages":[
+      ["Scoped Symbols in Optimization", "The uppercase symbol W denotes a projection matrix. The lowercase symbol w denotes a scalar confidence weight.", "The input vector x has eight components and the output vector y has four components.", "The learning rate is positive. The update subtracts the gradient from the current parameter vector."],
+      ["Appendix B", "In this appendix only, the symbol w denotes a walk on a graph rather than a confidence weight."]
+    ]}
+  ],
+  "cases": [
+    {"id":"b-variance","document":"bayesian","question":"What is the posterior variance after calibration?","expected_quote":"posterior variance is one square volt"},
+    {"id":"b-observations","document":"bayesian","question":"How many independent observations are used?","expected_quote":"sixteen independent observations"},
+    {"id":"b-assumption","document":"bayesian","question":"Which measurements violate the independence assumption?","expected_quote":"Correlated measurements violate"},
+    {"id":"b-body-boundary","document":"bayesian","question":"What is the main result concerning uncertainty and sensor hardware?","expected_quote":"without a change to the sensor hardware","forbidden_section":"references"},
+    {"id":"b-proof","document":"bayesian","question":"What noise assumption is made in the appendix proof?","expected_quote":"Gaussian sensor noise with zero mean"},
+    {"id":"m-atmosphere","document":"materials","question":"What gas surrounds the coating during thermal testing?","expected_quote":"under dry nitrogen"},
+    {"id":"m-failure","document":"materials","question":"What happened to fractured specimens in subsequent cycles?","expected_quote":"Failed specimens were excluded"},
+    {"id":"m-conductivity","document":"materials","question":"Compare baseline and coated conductivity at the same temperature","expected_quote":"baseline conductivity was 18 and the coated conductivity was 12"},
+    {"id":"m-errorbars","document":"materials","question":"What do error bars represent?","expected_quote":"standard errors across five repeated measurements"},
+    {"id":"m-humidity","document":"materials","question":"Does the study establish performance in moist air?","expected_quote":"cannot establish performance in moist air"},
+    {"id":"g-cycle","document":"graphs","question":"Does the algorithm guarantee termination with directed cycles?","expected_quote":"does not claim termination on cyclic graphs"},
+    {"id":"g-memory","document":"graphs","question":"What determines queue memory use?","expected_quote":"proportional to the number of vertices"},
+    {"id":"g-edgeweights","document":"graphs","question":"What restrictions apply to edge weights?","expected_quote":"Edge weights are nonnegative integers"},
+    {"id":"g-size","document":"graphs","question":"How many edges are in the experimental graph?","expected_quote":"64 vertices and 128 edges"},
+    {"id":"r-sensors","document":"robotics-scan","question":"Which sensors estimate wheel slip?","expected_quote":"optical encoder and a downward camera","requires_ocr":true},
+    {"id":"r-surfaces","document":"robotics-scan","question":"Was wheel calibration evaluated on wet surfaces?","expected_quote":"Wet surfaces were not evaluated","requires_ocr":true},
+    {"id":"r-stop","document":"robotics-scan","question":"Does the emergency stop depend on the learned controller?","expected_quote":"emergency stop bypasses the learned controller","requires_ocr":true},
+    {"id":"r-frequency","document":"robotics-scan","question":"How frequently does the controller update?","expected_quote":"controller updates at twenty hertz","requires_ocr":true},
+    {"id":"j-short","document":"genomics-mixed","question":"Which sequences are rejected before alignment?","expected_quote":"sequences shorter than thirty bases","requires_ocr":true},
+    {"id":"j-mask","document":"genomics-mixed","question":"How are ambiguous bases handled?","expected_quote":"Ambiguous bases are masked","requires_ocr":true},
+    {"id":"j-clinical","document":"genomics-mixed","question":"Does the evaluation measure clinical diagnosis accuracy?","expected_quote":"does not measure clinical diagnosis accuracy","requires_ocr":true},
+    {"id":"s-case","document":"symbols","question":"What does uppercase W denote?","expected_quote":"uppercase symbol W denotes a projection matrix"},
+    {"id":"s-dimensions","document":"symbols","question":"What is the dimensionality of the input and output vectors?","expected_quote":"eight components and the output vector y has four components"},
+    {"id":"s-scope","document":"symbols","question":"What does w mean in the appendix?","expected_quote":"w denotes a walk on a graph"},
+    {"id":"b-negative","document":"bayesian","question":"Which monoclonal antibody dosage was administered?","unanswerable":true},
+    {"id":"m-negative","document":"materials","question":"How was the galaxy redshift measured using a telescope?","unanswerable":true},
+    {"id":"g-negative","document":"graphs","question":"What antibiotic concentration killed the bacteria?","unanswerable":true},
+    {"id":"r-negative","document":"robotics-scan","question":"What taxonomic genus was assigned to the fossil?","unanswerable":true},
+    {"id":"j-negative","document":"genomics-mixed","question":"What telescope aperture captured the supernova?","unanswerable":true},
+    {"id":"s-negative","document":"symbols","question":"What solvent dissolves the ceramic coating?","unanswerable":true}
+  ]
+}

@@ -26,6 +26,9 @@ load_dotenv(REPO_ROOT / ".env")
 
 from paper_agent.concepts import get_or_create_concept_card, save_concept_index  # noqa: E402
 from paper_agent.arxiv_source import ingest_source, load_source  # noqa: E402
+from paper_agent.evidence_index import render_source_crop  # noqa: E402
+from paper_agent.equation_tutor import save_correction  # noqa: E402
+from paper_agent.fulltext_sources import ingest_openalex_fulltext  # noqa: E402
 from paper_agent.scholarly_metadata import load_metadata, refresh_metadata  # noqa: E402
 from paper_agent.concept_enrichment import (  # noqa: E402
     enrich_concept_card,
@@ -75,7 +78,7 @@ from paper_agent.workspace import Workspace  # noqa: E402
 UPLOAD_ROOT = REPO_ROOT / "uploaded_papers"
 REPORT_ROOT = REPO_ROOT / "paper_reports"
 DEFAULT_PORT = int(os.getenv("PAPER_READER_PORT", "8503"))
-BUILD_LABEL = "reader-build-2026-10-04-term-feedback-v36"
+BUILD_LABEL = "reader-build-2026-11-21-evidence-tutor-v37"
 ENRICHMENT_JOB_TIMEOUT = max(30.0, min(float(os.getenv("ENRICHMENT_JOB_TIMEOUT", "240")), 600.0))
 ENRICHMENT_JOBS: dict[str, dict[str, object]] = {}
 ENRICHMENT_LOCK = threading.RLock()
@@ -107,6 +110,7 @@ def _job_view(job: dict[str, object]) -> dict[str, object]:
             "message": job["message"],
             "elapsedSeconds": round(now - float(job["started_monotonic"]), 1),
             "result": job.get("result"),
+            "preview": job.get("preview"),
         }
 
 
@@ -196,6 +200,7 @@ def _chat_job_view(job: dict[str, object]) -> dict[str, object]:
         return {
             "jobId": job["id"],
             "threadId": job["thread_id"],
+            "preview": job.get("preview"),
             "status": job["status"],
             "stage": job["stage"],
             "message": job["message"],
@@ -209,6 +214,17 @@ def _update_chat_job(job_id: str, stage: str, message: str) -> None:
         job = CHAT_JOBS.get(job_id)
         if not job or job.get("status") != "running":
             return
+        if stage in {"evidence_preview", "answer_preview"}:
+            try:
+                preview = json.loads(message)
+                job["preview"] = {**(job.get("preview") or {}), **preview}
+                message = (
+                    "Source passages are ready."
+                    if stage == "evidence_preview"
+                    else "Answer ready; checking its claims."
+                )
+            except ValueError:
+                message = "Preparing source evidence."
         job.update(stage=stage, message=message, updated_at=time.time())
 
 
@@ -1331,6 +1347,31 @@ APP_HTML = r"""<!doctype html>
       margin: 8px 0;
       font-size: 18px;
     }
+    .equation-comparison {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      margin: 10px 0 14px;
+    }
+    .equation-comparison-card {
+      min-width: 0;
+      border: 1px solid #cfd8e5;
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 10px;
+    }
+    .equation-comparison-card h4 { margin-top: 0; }
+    .equation-comparison-card img { width: 100%; max-height: 220px; object-fit: contain; }
+    .transcription-stop {
+      border: 1px solid #dda09b;
+      border-left: 4px solid #b42318;
+      border-radius: 7px;
+      background: #fff6f5;
+      color: #6d1c16;
+      padding: 11px 12px;
+      margin: 10px 0;
+    }
+    @media (max-width: 760px) { .equation-comparison { grid-template-columns: 1fr; } }
     .math-render-fallback {
       min-height: 74px;
       display: grid;
@@ -1666,6 +1707,8 @@ APP_HTML = r"""<!doctype html>
               <h2>Scholarly metadata</h2>
               <p id="metadataStatus" class="subtle">Local identity only.</p>
               <button id="loadMetadataBtn">Resolve metadata and related work</button>
+              <button id="loadFulltextBtn">Load OpenAlex full text</button>
+              <p id="fulltextStatus" class="subtle">Optional external copy; uploaded PDF remains primary.</p>
               <div id="metadataDetails" class="subtle"></div>
               <p class="subtle">External records are discovery context, not evidence for claims in the uploaded paper.</p>
             </div>
@@ -1714,6 +1757,7 @@ APP_HTML = r"""<!doctype html>
       <option value="result">Result</option>
     </select>
     <button id="selectionSave">Remember</button>
+    <button id="selectionExplain">Explain selection</button>
   </div>
   <div id="loadingOverlay" class="loading-overlay" role="status" aria-live="assertive">
     <div class="loading-panel">
@@ -1724,7 +1768,7 @@ APP_HTML = r"""<!doctype html>
     </div>
   </div>
   <script>
-    const BUILD_LABEL = 'reader-build-2026-10-04-term-feedback-v36';
+    const BUILD_LABEL = 'reader-build-2026-11-21-evidence-tutor-v37';
     const state = { workspace: null, pages: [], sections: [], terms: [], termMap: new Map(), metadata: null, pageLayouts: new Map(), selectionPage: null, mathExplanations: new Map(), mathPending: new Set(), threadId: null, chatMode: 'fast', chatBusy: false, lastQuestion: '', chatQuestions: new Map() };
     const autoWebAttempted = new Set();
     let mathHoverTimer = null;
@@ -1765,9 +1809,23 @@ APP_HTML = r"""<!doctype html>
         <p class="subtle">${escapeHtml(item.source === 'web' ? 'External web context' : item.source === 'memory' ? 'User memory — not paper evidence' : item.url ? 'Version-matched paper HTML' : 'Uploaded PDF evidence')} · ${escapeHtml(item.id)}</p>
         ${item.section ? `<h4>${escapeHtml(item.section)}</h4>` : ''}
         <blockquote>${escapeHtml(item.excerpt || 'No passage was saved for this citation.')}</blockquote>
+        ${item.page && item.bbox ? `<img alt="Supporting PDF region" src="/api/source-crop?workspace=${encodeURIComponent(state.workspace)}&page=${Number(item.page)}&bbox=${encodeURIComponent(JSON.stringify(item.bbox))}" />` : ''}
         ${item.page ? `<button data-chat-page="${Number(item.page)}">Go to PDF page ${Number(item.page)}</button>` : ''}
         ${url ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">Open source</a>` : ''}`;
       setSidePanel('evidence');
+      if (item.page && item.bbox && item.page_width && item.page_height) {
+        document.querySelectorAll('.source-focus').forEach(node => node.remove());
+        const shell = document.getElementById(`pdf-page-${item.page}`);
+        const layer = shell?.querySelector('.pdf-page');
+        if (layer) {
+          const mark = document.createElement('div');
+          mark.className = 'source-focus';
+          const [x0,y0,x1,y1] = item.bbox;
+          mark.style.cssText = `position:absolute;pointer-events:none;z-index:7;border:3px solid #156bb8;background:#ffda4440;left:${percent(x0,item.page_width)};top:${percent(y0,item.page_height)};width:${percent(x1-x0,item.page_width)};height:${percent(y1-y0,item.page_height)}`;
+          layer.appendChild(mark);
+          mark.scrollIntoView({behavior:'smooth', block:'center'});
+        }
+      }
     }
 
     function formatChatInline(text) {
@@ -1885,11 +1943,13 @@ APP_HTML = r"""<!doctype html>
       $('chatStatus').textContent = message;
     }
 
-    function appendChatThinking(message) {
+    function appendChatThinking(message, preview=null) {
       document.querySelector('[data-chat-thinking]')?.remove();
       $('chatMessages').insertAdjacentHTML('beforeend', `
         <div class="chat-message assistant" data-chat-thinking>
-          <div class="chat-thinking"><div class="spinner"></div><span>${escapeHtml(message)}</span></div>
+          <div class="chat-bubble"><div class="chat-thinking"><div class="spinner"></div><span>${escapeHtml(message)}</span></div>
+          ${preview?.answer ? `<p class="subtle">Draft — source checks pending</p><div class="chat-answer">${formatChatMarkdown(preview.answer)}</div>` : ''}
+          ${preview?.citations?.length ? `<p class="subtle">Retrieved sources</p>${citationMarkup(preview.citations, 'preview')}` : ''}</div>
         </div>`);
       $('chatMessages').scrollTop = $('chatMessages').scrollHeight;
     }
@@ -1903,7 +1963,7 @@ APP_HTML = r"""<!doctype html>
         const job = await res.json();
         const status = `${job.message || 'Working...'} (${job.elapsedSeconds || 0}s)`;
         setChatBusy(true, status);
-        appendChatThinking(status);
+        appendChatThinking(status, job.preview);
         if (job.status === 'completed') return job.result;
         if (job.status === 'failed') throw new Error(job.message || 'Paper chat failed.');
       }
@@ -2704,6 +2764,47 @@ APP_HTML = r"""<!doctype html>
       const dimensionEntries = Object.entries(dimensionLabels).filter(([key]) => dimensions[key]);
       const verdict = evaluation.verdict || 'review';
       const displayLatex = String(explanation.display_latex || '').trim();
+      const reviewRequired = explanation.status === 'transcription_review_required';
+      const transcriptionCandidates = Object.entries(explanation.transcription_candidates || {});
+      const correctionHtml = `<details class="technical-details"><summary>Correct the equation notation</summary>
+        <p class="subtle">Compare with the PDF, then save your LaTeX correction for this paper region.</p>
+        <textarea id="correctedMath" maxlength="6000" aria-label="Corrected equation LaTeX" style="width:100%;min-height:85px">${escapeHtml(displayLatex)}</textarea>
+        <button data-save-transcription>Save correction and explain</button><p id="correctionStatus" class="subtle"></p></details>`;
+      const comparisonHtml = `
+        <div class="equation-comparison">
+          <div class="equation-comparison-card">
+            <h4>Original PDF crop</h4>
+            <img alt="Original equation crop from page ${Number(explanation.page)}" src="${escapeHtml(pop.dataset.cropUrl || '')}" />
+          </div>
+          <div class="equation-comparison-card">
+            <h4>Reconstructed equation</h4>
+            ${displayLatex
+              ? `<div class="math-rendered" data-page="${escapeHtml(explanation.page)}">\\[${escapeHtml(displayLatex)}\\]</div>`
+              : `<div class="math-render-fallback">No reliable reconstruction is available.</div>`}
+          </div>
+        </div>`;
+      if (reviewRequired) {
+        pop.innerHTML = `
+          <div class="popover-header">
+            <div><h3>Equation · page ${escapeHtml(explanation.page)}</h3><span class="tag">transcription review required</span></div>
+            <button id="closeMath">Back to chat</button>
+          </div>
+          ${comparisonHtml}
+          ${correctionHtml}
+          <div class="transcription-stop"><b>Explanation withheld.</b> The notation sources disagree or remain too uncertain. Verify the crop before relying on any symbol, role, derivation, or implementation claim.</div>
+          ${transcriptionWarnings.length ? `<h4>Why it stopped</h4><ul class="evidence">${transcriptionWarnings.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}
+          <h4>Candidate transcriptions</h4>
+          ${transcriptionCandidates.length ? `<table class="symbol-table"><thead><tr><th>Source</th><th>Candidate LaTeX</th></tr></thead><tbody>${transcriptionCandidates.map(([source, latex]) => `<tr><td>${escapeHtml(humanizeLabel(source))}</td><td><code>${escapeHtml(latex)}</code></td></tr>`).join('')}</tbody></table>` : '<p class="subtle">No valid candidate survived validation.</p>'}
+          <button data-chat-page="${Number(explanation.page)}">Go to PDF page ${Number(explanation.page)}</button>
+          <details class="technical-details"><summary>Transcription diagnostics</summary>
+            <div class="subtle">${escapeHtml(explanation.latex_source || 'unavailable')} · ${escapeHtml(String(Math.round((Number(explanation.transcription_confidence) || 0) * 100)))}% · vision ${explanation.vision_attempted ? 'attempted' : 'skipped'} (${escapeHtml(explanation.vision_routed_reason || 'no reason recorded')})</div>
+            <h4>Extracted PDF text</h4><div class="equation-card">${escapeHtml(explanation.raw_equation || '')}</div>
+            <h4>Candidate agreement</h4><div class="equation-card">${escapeHtml(JSON.stringify(explanation.transcription_similarities || {}, null, 2))}</div>
+          </details>`;
+        $('closeMath').onclick = () => setSidePanel('chat');
+        if (displayLatex) typesetMath(pop);
+        return;
+      }
       pop.innerHTML = `
         <div class="popover-header">
           <div>
@@ -2714,25 +2815,26 @@ APP_HTML = r"""<!doctype html>
           </div>
           <button id="closeMath">Back to chat</button>
         </div>
-        <h4>Original PDF notation</h4>
-        <img alt="Original equation crop from page ${Number(explanation.page)}" src="${escapeHtml(pop.dataset.cropUrl || '')}" />
+        ${comparisonHtml}
+        ${correctionHtml}
         <button data-chat-page="${Number(explanation.page)}">Go to PDF page ${Number(explanation.page)}</button>
         ${transcriptionWarnings.length ? `<p class="subtle">Notation needs review: ${transcriptionWarnings.map(escapeHtml).join(' ')}</p>` : ''}
-        <h4>Reconstructed equation</h4>
-        ${displayLatex
-          ? `<div class="math-rendered" data-page="${escapeHtml(explanation.page)}">\\[${escapeHtml(displayLatex)}\\]</div>`
-          : `<div class="math-render-fallback">A reliable equation preview could not be produced for page ${escapeHtml(explanation.page)}. The original notation remains visible in the paper; extraction details are available below.</div>`}
         <h4>Role</h4>
         <p class="role-copy">${escapeHtml(humanizeLabel(explanation.role))}</p>
         <h4>Plain English</h4>
         <p>${formatInline(explanation.plain_english || '')}</p>
+        <div class="tag-row">
+          <button data-tutor-question="intuition">Explain intuitively</button>
+          <button data-tutor-question="derivation">Walk through the derivation</button>
+          <button data-tutor-question="implementation">Show pseudocode and shapes</button>
+        </div>
         <details><summary>Step by step and symbols</summary>
         <h4>Step by step</h4>
-        <ol class="evidence">${steps.map(item => cleanListItem(item)).filter(Boolean).map(item => `<li>${formatInline(item)}</li>`).join('') || '<li>No steps were produced.</li>'}</ol>
+        <ol class="evidence">${steps.map(item => cleanListItem(item)).filter(Boolean).map((item,index) => `<li>${formatInline(item)} <button data-tutor-step="${index}">Explain this step</button></li>`).join('') || '<li>No steps were produced.</li>'}</ol>
         <h4>Symbols</h4>
         ${symbols.length ? `
-          <table class="symbol-table"><thead><tr><th>Symbol</th><th>Meaning</th><th>Basis</th></tr></thead><tbody>
-          ${symbols.map(item => `<tr><td><span class="math-symbol inline-math-source" data-latex="${escapeHtml(item.symbol)}">\\(${escapeHtml(item.symbol)}\\)</span></td><td>${formatInline(item.meaning)}</td><td><span class="symbol-source">${escapeHtml(humanizeLabel(item.source, 'Unresolved'))}</span></td></tr>`).join('')}
+          <table class="symbol-table"><thead><tr><th>Symbol</th><th>Meaning</th><th>Basis and evidence</th></tr></thead><tbody>
+          ${symbols.map(item => `<tr><td><button data-tutor-symbol="${escapeHtml(item.symbol)}"><span class="math-symbol inline-math-source" data-latex="${escapeHtml(item.symbol)}">\\(${escapeHtml(item.symbol)}\\)</span></button></td><td>${formatInline(item.meaning)}</td><td><span class="symbol-source">${escapeHtml(humanizeLabel(item.source, 'Unresolved'))}</span>${item.evidence ? `<div class="subtle">${item.page ? `<button data-chat-page="${Number(item.page)}">Page ${escapeHtml(item.page)}</button> · ` : ''}${escapeHtml(item.evidence)}</div>` : ''}</td></tr>`).join('')}
           </tbody></table>` : '<p class="subtle">No symbols were resolved.</p>'}
         </details>
         <h4>Intuition</h4>
@@ -2749,6 +2851,7 @@ APP_HTML = r"""<!doctype html>
         </details>
         <h4>How it fits the paper</h4>
         <p>${formatInline(explanation.context_fit || '')}</p>
+        ${(explanation.tutor?.neighbors || []).length ? `<details><summary>Nearby equations</summary><p class="subtle">Proximity alone does not establish a derivation or dependency.</p>${explanation.tutor.neighbors.map(item => `<p><button data-chat-page="${Number(item.page)}">Page ${Number(item.page)}</button> ${escapeHtml(item.id)}<br><code>${escapeHtml(item.text)}</code></p>`).join('')}</details>` : ''}
         <h4>Paper evidence</h4>
         <ul class="evidence paper-evidence">${paperEvidence.map(item => cleanPaperEvidence(item)).filter(Boolean).map(item => `<li>${formatTechnicalInline(item)}</li>`).join('') || '<li>No supporting paper evidence was produced.</li>'}</ul>
         ${(explanation.structured_sources || []).length ? `<details><summary>Related version-matched HTML passages</summary><p class="subtle">Related context, not a verified match to this equation.</p>${explanation.structured_sources.map(item => `<blockquote>${escapeHtml(item.text)}</blockquote>${safeSourceUrl(item.url) ? `<a href="${escapeHtml(safeSourceUrl(item.url))}" target="_blank" rel="noopener noreferrer">arXiv ${escapeHtml(item.version)} · ${escapeHtml(item.section)}</a>` : ''}`).join('')}</details>` : ''}
@@ -2921,7 +3024,7 @@ APP_HTML = r"""<!doctype html>
       const selection = window.getSelection();
       if (!selection || selection.isCollapsed || !selection.rangeCount) return;
       const term = cleanSelectedTerm(selection.toString());
-      if (term.length < 2 || term.length > 120) return;
+      if (term.length < 2 || term.length > 1800) return;
       const range = selection.getRangeAt(0);
       const node = range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
         ? range.commonAncestorContainer
@@ -2929,6 +3032,7 @@ APP_HTML = r"""<!doctype html>
       const pageShell = node?.closest?.('.pdf-page-shell');
       if (!pageShell) return;
       state.selectionPage = Number(pageShell.dataset.page);
+      state.selectedPassage = term;
       $('manualTerm').value = term;
       $('selectionLabel').textContent = `Remember “${term}”`;
       const rect = range.getBoundingClientRect();
@@ -2999,6 +3103,33 @@ APP_HTML = r"""<!doctype html>
     }
 
     document.addEventListener('click', (event) => {
+      const tutorButton = event.target.closest('[data-tutor-question], [data-tutor-step], [data-tutor-symbol]');
+      if (tutorButton) {
+        const explanation = state.mathExplanations.get($('evidencePanel').dataset.mathKey);
+        if (!explanation || state.chatBusy) return;
+        const focus = tutorButton.dataset.tutorSymbol !== undefined ? `Define the symbol ${tutorButton.dataset.tutorSymbol} at this location, with supporting source text` : tutorButton.dataset.tutorStep !== undefined ? `Explain this computational step: ${explanation.steps[Number(tutorButton.dataset.tutorStep)]}` : `Explain the ${tutorButton.dataset.tutorQuestion}`;
+        $('chatInput').value = `${focus} for the equation on page ${explanation.page}: ${explanation.display_latex}. Use paper definitions, distinguish standard algebra from paper derivations, and identify missing assumptions.`;
+        setSidePanel('chat');
+        sendChat();
+        return;
+      }
+      if (event.target.closest('[data-save-transcription]')) {
+        const panel = $('evidencePanel');
+        const mathKey = panel.dataset.mathKey;
+        const explanation = state.mathExplanations.get(mathKey);
+        if (!explanation) return;
+        const button = event.target.closest('[data-save-transcription]');
+        button.disabled = true;
+        $('correctionStatus').textContent = 'Saving corrected notation…';
+        fetch(`/api/math-correction?workspace=${encodeURIComponent(state.workspace)}`, {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({page:explanation.page, region:explanation.equation_id, latex:$('correctedMath').value})
+        }).then(async response => { if (!response.ok) throw new Error(await response.text());
+          state.mathExplanations.delete(mathKey); state.mathPending.delete(mathKey);
+          openMath(explanation.page, explanation.equation_id);
+        }).catch(error => { $('correctionStatus').textContent = error.message; button.disabled = false; });
+        return;
+      }
       const evidenceButton = event.target.closest('[data-evidence-key]');
       if (evidenceButton) { openEvidence(evidenceButton.dataset.evidenceKey); return; }
       const sidePanel = event.target.closest('[data-side-panel]');
@@ -3190,6 +3321,24 @@ APP_HTML = r"""<!doctype html>
         if (state.workspace === workspace) { $('metadataStatus').textContent = err.message; $('loadMetadataBtn').disabled = false; }
       }
     });
+    $('loadFulltextBtn').addEventListener('click', async () => {
+      if (!state.workspace) return;
+      $('loadFulltextBtn').disabled = true;
+      $('fulltextStatus').textContent = 'Loading structured full text…';
+      try {
+        const response = await fetch(`/api/openalex-fulltext?workspace=${encodeURIComponent(state.workspace)}`, {method:'POST'});
+        if (!response.ok) throw new Error(await response.text());
+        const result = await response.json();
+        $('fulltextStatus').textContent = `${String(result.status).replaceAll('_',' ')} · ${(result.items || []).length} passages · exact uploaded version not verified`;
+      } catch(error) { $('fulltextStatus').textContent = error.message; }
+      finally { $('loadFulltextBtn').disabled = false; }
+    });
+    $('selectionExplain').addEventListener('click', () => {
+      if (!state.selectedPassage || state.chatBusy) return;
+      $('chatInput').value = `Explain this selected passage on page ${state.selectionPage}, using its context and defining any technical terms: "${state.selectedPassage}"`;
+      $('selectionAction').classList.remove('open');
+      setSidePanel('chat'); sendChat();
+    });
     $('sendChatBtn').addEventListener('click', sendChat);
     $('chatInput').addEventListener('keydown', event => {
       if (event.key === 'Enter' && !event.shiftKey) {
@@ -3342,6 +3491,13 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                     HTTPStatus.OK, render_page_png(workspace, parsed, page_number), "image/png"
                 )
                 return
+            if parsed_url.path == "/api/source-crop":
+                query = parse_qs(parsed_url.query)
+                workspace, parsed = load_workspace(query.get("workspace", [None])[0])
+                page = int(query.get("page", ["0"])[0])
+                bbox = json.loads(query["bbox"][0]) if "bbox" in query else None
+                self._send(HTTPStatus.OK, render_source_crop(parsed, page, bbox), "image/png")
+                return
             if parsed_url.path == "/api/enrichment-status":
                 query = parse_qs(parsed_url.query)
                 job_id = query.get("job", [""])[0].strip()
@@ -3386,6 +3542,37 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                 workspace, parsed = load_workspace(query.get("workspace", [None])[0])
                 self._json(refresh_metadata(parsed, workspace))
                 return
+            if parsed_url.path == "/api/openalex-fulltext":
+                query = parse_qs(parsed_url.query)
+                workspace, parsed = load_workspace(query.get("workspace", [None])[0])
+                self._json(ingest_openalex_fulltext(parsed, workspace))
+                return
+            if parsed_url.path == "/api/math-correction":
+                query = parse_qs(parsed_url.query)
+                workspace, parsed = load_workspace(query.get("workspace", [None])[0])
+                length = int(self.headers.get("Content-Length", "0"))
+                if not 0 < length <= 16000:
+                    self._error(HTTPStatus.BAD_REQUEST, "Missing or oversized correction")
+                    return
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                page = int(payload.get("page", 0))
+                layout = page_layout_payload(parsed, [], page, workspace)
+                region = next(
+                    (r for r in layout["mathRegions"] if r["id"] == payload.get("region")), None
+                )
+                if not region:
+                    self._error(HTTPStatus.NOT_FOUND, "Math region not found")
+                    return
+                self._json(
+                    save_correction(
+                        workspace,
+                        page,
+                        region["raw"],
+                        region["layout_evidence"],
+                        str(payload.get("latex") or ""),
+                    )
+                )
+                return
             if parsed_url.path == "/api/enrich-term":
                 query = parse_qs(parsed_url.query)
                 term = query.get("term", [""])[0].strip()
@@ -3416,6 +3603,13 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                 if not isinstance(region, dict):
                     self._error(HTTPStatus.NOT_FOUND, "Math region not found")
                     return
+                region_layout_evidence = (
+                    dict(region.get("layout_evidence"))
+                    if isinstance(region.get("layout_evidence"), dict)
+                    else {}
+                )
+                if isinstance(region.get("confidence"), (int, float)):
+                    region_layout_evidence["region_confidence"] = region.get("confidence")
                 self._json(
                     start_math_job(
                         workspace,
@@ -3425,9 +3619,7 @@ class PaperReaderHandler(BaseHTTPRequestHandler):
                         str(region.get("raw") or ""),
                         str(region.get("context") or ""),
                         str(region.get("kind") or "display"),
-                        region.get("layout_evidence")
-                        if isinstance(region.get("layout_evidence"), dict)
-                        else None,
+                        region_layout_evidence,
                     ),
                     status=HTTPStatus.ACCEPTED,
                 )
