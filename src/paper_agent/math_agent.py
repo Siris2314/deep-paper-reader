@@ -32,7 +32,11 @@ from paper_agent.math_grounding import (
     contextual_math_evidence,
     deterministic_math_fallback,
 )
-from paper_agent.math_judge import MathJudgeResult, evaluate_math_explanation
+from paper_agent.math_judge import (
+    MathJudgeResult,
+    deterministic_math_checks,
+    evaluate_math_explanation,
+)
 from paper_agent.observability import (
     invoke_observed,
     observed_stage,
@@ -86,7 +90,7 @@ class MathExplanation:
     role: str
     plain_english: str
     steps: list[str]
-    symbols: list[dict[str, str]]
+    symbols: list[dict[str, object]]
     intuition: str
     dimensional_analysis: str
     implementation_view: str
@@ -105,6 +109,10 @@ class MathExplanation:
     toy_example: str = ""
     explanation_confidence: Literal["low", "medium", "high"] = "low"
     structured_sources: list[dict[str, object]] = field(default_factory=list)
+    vision_attempted: bool = False
+    vision_routed_reason: str = ""
+    transcription_cache_hit: bool = False
+    tutor: dict[str, object] = field(default_factory=dict)
 
 
 class MathSymbolMeaning(BaseModel):
@@ -112,6 +120,14 @@ class MathSymbolMeaning(BaseModel):
     meaning: str = Field(description="What the symbol denotes in this paper.")
     source: Literal["paper", "inference", "unresolved"] = Field(
         description="Provenance of the stated meaning."
+    )
+    evidence: str = Field(
+        default="",
+        description="Quoted nearby paper text when source is paper; otherwise a concise reasoning note.",
+    )
+    page: int | None = Field(
+        default=None,
+        description="One-based PDF page containing the supporting definition, when available.",
     )
 
 
@@ -307,6 +323,36 @@ def analyze_expression(raw: str) -> MathParse:
             int(sympy.count_ops(expression)),
         )
     except Exception as exc:
+        # SymPy's full LaTeX parser depends on an exact antlr runtime. Preserve a
+        # deterministic path for simple fractions when that optional parser is absent.
+        fallback = clean
+        previous = None
+        while previous != fallback:
+            previous = fallback
+            fallback = re.sub(
+                r"\\frac\{([^{}]+)\}\{([^{}]+)\}",
+                r"((\1)/(\2))",
+                fallback,
+            )
+        fallback = (
+            fallback.replace(r"\cdot", "*")
+            .replace(r"\times", "*")
+            .replace(r"\left", "")
+            .replace(r"\right", "")
+        )
+        fallback = re.sub(r"\^\{([^{}]+)\}", r"^(\1)", fallback)
+        if fallback != clean and "\\" not in fallback and "{" not in fallback:
+            recovered = analyze_expression(fallback)
+            if recovered.status.startswith("parsed"):
+                return MathParse(
+                    "parsed_latex",
+                    clean,
+                    recovered.sympy_form,
+                    recovered.latex,
+                    recovered.free_symbols,
+                    recovered.operation_count,
+                    f"Used the deterministic LaTeX fallback because: {exc}",
+                )
         return MathParse("unparsed", clean, None, None, symbols, None, str(exc))
 
 
@@ -352,7 +398,7 @@ def _symbol_key(value: str) -> str:
     clean = value.strip().strip("$")
     clean = re.sub(r"\\(?:mathbf|mathrm|text|bf)", "", clean)
     clean = re.sub(r"\(\\cdot\)$", "", clean)
-    return re.sub(r"[{}\s]", "", clean).lower()
+    return re.sub(r"[{}\s]", "", clean)
 
 
 def _clean_symbol_latex(value: str) -> str:
@@ -457,6 +503,7 @@ def _specific_role(role: str, latex: str) -> str:
 
 def _safe_display_latex(value: str) -> str:
     latex = _repair_generated_math_text(value, whole_math=True).strip()
+    latex = re.sub(r"\\[nrt]\s*$", "", latex).strip()
     if latex.startswith("$$") and latex.endswith("$$"):
         latex = latex[2:-2].strip()
     elif latex.startswith("$") and latex.endswith("$"):
@@ -475,26 +522,54 @@ def _safe_display_latex(value: str) -> str:
 def _latex_tokens(value: str) -> list[str]:
     normalized = value.replace(r"\left", "").replace(r"\right", "")
     normalized = normalized.replace(r"\dfrac", r"\frac")
-    return re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+(?:\.\d+)?|[=+\-*/^_<>]", normalized)
+    return re.findall(r"\\[A-Za-z]+|[A-Za-z]+|\d+(?:\.\d+)?|[{}()[\]|,;=+\-*/^_<>]", normalized)
+
+
+def _agreement_latex(value: str) -> str:
+    # Font weight is not equation structure. Keep the original candidate for display,
+    # but don't reject matching math solely because vision added bold styling.
+    clean = re.sub(r"\\(?:mathbf|boldsymbol)\{([^{}]+)\}", r"\1", value)
+    return re.sub(r"([_^])\{([A-Za-z0-9]|\\[A-Za-z]+)\}", r"\1\2", clean)
 
 
 def _latex_similarity(left: str, right: str) -> float:
-    left_tokens = _latex_tokens(left)
-    right_tokens = _latex_tokens(right)
+    left_tokens = _latex_tokens(_agreement_latex(left))
+    right_tokens = _latex_tokens(_agreement_latex(right))
     if not left_tokens or not right_tokens:
         return 0.0
     similarity = SequenceMatcher(None, left_tokens, right_tokens).ratio()
     critical_commands = (r"\frac", r"\sum", r"\prod", r"\int", r"\exp", r"\log")
     left_structure = tuple(left.count(command) for command in critical_commands)
     right_structure = tuple(right.count(command) for command in critical_commands)
-    structural_tokens = set(critical_commands) | {"=", "+", "-", "*", "/", "^", "<", ">"}
+    structural_tokens = set(critical_commands) | {
+        "=",
+        "+",
+        "-",
+        "*",
+        "/",
+        "^",
+        "<",
+        ">",
+        "{",
+        "}",
+        "(",
+        ")",
+        "[",
+        "]",
+    }
     left_operations = [
         token for token in left_tokens if token in structural_tokens or token[:1].isdigit()
     ]
     right_operations = [
         token for token in right_tokens if token in structural_tokens or token[:1].isdigit()
     ]
-    if left_structure != right_structure or left_operations != right_operations:
+    left_symbols = sorted(t for t in left_tokens if re.fullmatch(r"[A-Za-z]+", t))
+    right_symbols = sorted(t for t in right_tokens if re.fullmatch(r"[A-Za-z]+", t))
+    if (
+        left_structure != right_structure
+        or left_operations != right_operations
+        or left_symbols != right_symbols
+    ):
         similarity = min(similarity, 0.55)
     return round(similarity, 3)
 
@@ -506,6 +581,7 @@ def _select_transcription(
     vision_latex: str,
     raw: str,
     region_kind: str,
+    structured_latex: str = "",
 ) -> TranscriptionSelection:
     candidates = {
         name: clean
@@ -513,6 +589,7 @@ def _select_transcription(
             ("sympy", parsed_latex),
             ("pdf_geometry", geometry_latex),
             ("vision_math_agent", vision_latex),
+            ("structured_source", structured_latex),
         )
         if (clean := _safe_display_latex(value))
     }
@@ -525,6 +602,7 @@ def _select_transcription(
         "sympy": 0.64,
         "pdf_geometry": 0.62,
         "vision_math_agent": 0.8 if region_kind == "display" else 0.58,
+        "structured_source": 0.76,
     }
     similarities: dict[str, float] = {}
     scores = {name: base_scores[name] for name in candidates}
@@ -546,6 +624,12 @@ def _select_transcription(
     if region_kind == "display" and "vision_math_agent" in scores:
         scores["vision_math_agent"] += 0.04
     selected = max(scores, key=scores.get)
+    if "pdf_geometry" in candidates and "vision_math_agent" in candidates:
+        if _latex_tokens(_agreement_latex(candidates["pdf_geometry"])) == _latex_tokens(
+            _agreement_latex(candidates["vision_math_agent"])
+        ):
+            # Preserve PDF typography when vision changes only styling/script braces.
+            selected = "pdf_geometry"
     confidence = min(scores[selected], 0.99)
     warnings: list[str] = []
     peer_similarities = [value for key, value in similarities.items() if selected in key.split(":")]
@@ -571,6 +655,73 @@ def _select_transcription(
         similarities=similarities,
         warnings=warnings,
     )
+
+
+def transcription_needs_vision(
+    selection: TranscriptionSelection,
+    *,
+    region_kind: str,
+    region_confidence: float | None = None,
+) -> tuple[bool, str]:
+    """Route only uncertain display equations through the expensive crop reader."""
+
+    if region_kind != "display":
+        return False, "inline_region"
+    mode = os.getenv("PAPER_READER_MATH_VISION_MODE", "fallback").strip().casefold()
+    if mode in {"off", "false", "0", "never"}:
+        return False, "vision_disabled"
+    if mode in {"always", "all"}:
+        return True, "vision_forced"
+    try:
+        threshold = max(
+            0.6,
+            min(float(os.getenv("PAPER_READER_MATH_VISION_THRESHOLD", "0.78")), 0.95),
+        )
+    except ValueError:
+        threshold = 0.78
+    if not selection.latex:
+        return True, "no_valid_candidate"
+    if selection.confidence < threshold:
+        return True, "candidate_confidence_below_threshold"
+    if region_confidence is not None and region_confidence < 0.68:
+        return True, "region_detection_uncertain"
+    if selection.warnings:
+        return True, "candidate_disagreement"
+    return False, "independent_candidates_agree"
+
+
+def _selection_payload(selection: TranscriptionSelection) -> dict[str, object]:
+    return {
+        "latex": selection.latex,
+        "source": selection.source,
+        "confidence": selection.confidence,
+        "candidates": selection.candidates,
+        "similarities": selection.similarities,
+        "warnings": selection.warnings,
+    }
+
+
+def _selection_from_payload(payload: object) -> TranscriptionSelection | None:
+    if not isinstance(payload, dict):
+        return None
+    try:
+        candidates = payload.get("candidates")
+        similarities = payload.get("similarities")
+        warnings = payload.get("warnings")
+        return TranscriptionSelection(
+            latex=str(payload.get("latex") or ""),
+            source=str(payload.get("source") or "unavailable"),
+            confidence=max(0.0, min(float(payload.get("confidence") or 0.0), 1.0)),
+            candidates={str(k): str(v) for k, v in candidates.items()}
+            if isinstance(candidates, dict)
+            else {},
+            similarities={str(k): float(v) for k, v in similarities.items()}
+            if isinstance(similarities, dict)
+            else {},
+            warnings=[str(item) for item in warnings] if isinstance(warnings, list) else [],
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _equation_crop_data_url(
@@ -739,14 +890,16 @@ def _clean_generated_list(items: object, *, max_items: int) -> list[str]:
 
 def _normalized_symbols(
     generated: object,
-    supplemental: list[dict[str, str]],
-) -> list[dict[str, str]]:
+    supplemental: list[dict[str, object]],
+) -> list[dict[str, object]]:
     generated_items = generated if isinstance(generated, list) else []
     symbols = [
         {
             "symbol": _clean_symbol_latex(str(item.get("symbol") or "")),
             "meaning": _repair_generated_math_text(item.get("meaning")).strip(),
             "source": str(item.get("source") or "inference"),
+            "evidence": _repair_generated_math_text(item.get("evidence")).strip(),
+            "page": item.get("page") if isinstance(item.get("page"), int) else None,
         }
         for item in generated_items
         if isinstance(item, dict)
@@ -768,7 +921,9 @@ def _normalized_symbols(
             symbols.append(item)
             known[key] = len(symbols) - 1
         elif item["source"] == "paper" or symbols[known[key]]["source"] == "unresolved":
-            symbols[known[key]] = item
+            # Deterministically retrieved definitions outrank generated meanings and retain
+            # the exact supporting excerpt/page for the UI and judge.
+            symbols[known[key]] = dict(item)
     return symbols
 
 
@@ -906,7 +1061,7 @@ def _compact_repair_payload(
     evaluation: MathJudgeResult,
     *,
     context: str,
-    symbols: list[dict[str, str]],
+    symbols: list[dict[str, object]],
     evidence: list[str],
 ) -> dict[str, object]:
     source = asdict(current) if isinstance(current, MathExplanation) else current
@@ -971,7 +1126,7 @@ def _float_env(name: str, default: float) -> float:
 def _revised_explanation(
     current: MathExplanation,
     payload: dict[str, Any],
-    supplemental_symbols: list[dict[str, str]],
+    supplemental_symbols: list[dict[str, object]],
     grounded_evidence: list[str],
 ) -> MathExplanation:
     values = asdict(current)
@@ -1032,9 +1187,26 @@ def _explain_equation_impl(
     chat_model: Any | None = None,
     judge_fn: Callable[..., object] | None = None,
 ) -> MathExplanation:
+    from paper_agent.equation_tutor import load_correction, align_source_equation, tutor_context
+    from paper_agent.evidence_index import document_id
+
+    source_document_id = document_id(parsed)
+    correction = load_correction(workspace, page, raw, layout_evidence or {})
+    policy_key = json.dumps(
+        {
+            name: os.getenv(name, "")
+            for name in (
+                "PAPER_READER_MATH_MODEL",
+                "PAPER_READER_MATH_VISION_ENABLED",
+                "PAPER_READER_MATH_VISION_MODE",
+                "PAPER_READER_MATH_VISION_THRESHOLD",
+            )
+        },
+        sort_keys=True,
+    )
     structured_sources = retrieve_source(parsed, workspace, f"{raw}\n{context}", limit=3)
     digest = hashlib.sha256(
-        f"math-agent-v29-structured-evidence\n{page}\n{region_kind}\n{raw}\n{context}\n{json.dumps(structured_sources, sort_keys=True)}\n"
+        f"math-agent-v33-document-bound\n{source_document_id}\n{correction}\n{policy_key}\n{page}\n{region_kind}\n{raw}\n{context}\n{json.dumps(structured_sources, sort_keys=True)}\n"
         f"{json.dumps(layout_evidence or {}, sort_keys=True)}".encode("utf-8")
     ).hexdigest()[:16]
     cache_rel = f"math/explanations/page-{page:03d}-{digest}.json"
@@ -1089,16 +1261,95 @@ def _explain_equation_impl(
     primary_model = os.getenv(
         "PAPER_READER_MATH_MODEL", os.getenv("PAPER_READER_AGENT_MODEL", "qwen3.5:4b")
     )
-    vision_latex = ""
-    vision_confidence: float | None = None
-    vision_issues: list[str] = []
+    geometry_latex = _safe_display_latex(str(layout_evidence.get("geometry_latex") or ""))
+    alignment_raw = raw + (
+        f" ({layout_evidence['equation_label']})" if layout_evidence.get("equation_label") else ""
+    )
+    aligned_source = align_source_equation(parsed, workspace, alignment_raw, geometry_latex)
+    structured_latex = str((aligned_source or {}).get("latex") or "")
+    if aligned_source:
+        layout_evidence["aligned_source"] = aligned_source
+    preliminary_transcription = _select_transcription(
+        parsed_latex=parsed_math.latex or "",
+        geometry_latex=geometry_latex,
+        vision_latex="",
+        raw=raw,
+        region_kind=region_kind,
+        structured_latex=structured_latex,
+    )
+    if correction:
+        preliminary_transcription = TranscriptionSelection(
+            correction["latex"],
+            "user_correction",
+            0.95,
+            {**preliminary_transcription.candidates, "user_correction": correction["latex"]},
+            {},
+            ["Notation supplied by the reader for this paper region."],
+        )
+    raw_region_confidence = layout_evidence.get("region_confidence")
+    region_confidence = (
+        float(raw_region_confidence) if isinstance(raw_region_confidence, (int, float)) else None
+    )
     vision_enabled = os.getenv("PAPER_READER_MATH_VISION_ENABLED", "true").casefold() not in {
         "0",
         "false",
         "no",
         "off",
     }
-    if vision_enabled and region_kind == "display":
+    vision_needed, vision_routed_reason = transcription_needs_vision(
+        preliminary_transcription,
+        region_kind=region_kind,
+        region_confidence=region_confidence,
+    )
+    if not vision_enabled:
+        vision_needed, vision_routed_reason = False, "vision_disabled"
+    if correction:
+        vision_needed, vision_routed_reason = False, "user_correction"
+    transcription_digest = hashlib.sha256(
+        (
+            f"math-transcription-v5\n{source_document_id}\n{correction}\n{policy_key}\n"
+            f"{page}\n{region_kind}\n{raw}\n{primary_model}\n"
+            f"{json.dumps(layout_evidence, sort_keys=True)}"
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    transcription_cache_rel = f"math/transcriptions/page-{page:03d}-{transcription_digest}.json"
+    transcription_cache_path = workspace.path(transcription_cache_rel)
+    transcription_cache_hit = False
+    vision_attempted = False
+    vision_latex = ""
+    vision_confidence: float | None = None
+    vision_issues: list[str] = []
+    transcription: TranscriptionSelection | None = None
+    if correction:
+        transcription = preliminary_transcription
+    if transcription_cache_path.exists():
+        try:
+            cached_transcription = json.loads(transcription_cache_path.read_text(encoding="utf-8"))
+            transcription = _selection_from_payload(cached_transcription.get("selection"))
+            if transcription is not None:
+                transcription_cache_hit = True
+                vision_attempted = bool(cached_transcription.get("vision_attempted"))
+                vision_routed_reason = str(
+                    cached_transcription.get("vision_routed_reason") or vision_routed_reason
+                )
+                cached_layout = cached_transcription.get("layout_evidence")
+                if isinstance(cached_layout, dict):
+                    layout_evidence.update(cached_layout)
+                cached_vision = cached_transcription.get("vision")
+                if isinstance(cached_vision, dict):
+                    vision_latex = str(cached_vision.get("latex") or "")
+                    raw_confidence = cached_vision.get("confidence")
+                    vision_confidence = (
+                        float(raw_confidence) if isinstance(raw_confidence, (int, float)) else None
+                    )
+                    issues = cached_vision.get("legibility_issues")
+                    vision_issues = (
+                        [str(item) for item in issues] if isinstance(issues, list) else []
+                    )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            transcription = None
+    if transcription is None and vision_needed:
+        vision_attempted = True
         with observed_stage(
             "read-equation-image",
             input_data={"page": page, "bbox": (layout_evidence or {}).get("bbox")},
@@ -1146,15 +1397,157 @@ def _explain_equation_impl(
                     status_message=f"Equation image transcription unavailable: {exc}",
                     level="WARNING",
                 )
-    geometry_latex = _safe_display_latex(str((layout_evidence or {}).get("geometry_latex") or ""))
-    transcription = _select_transcription(
-        parsed_latex=parsed_math.latex or "",
-        geometry_latex=geometry_latex,
-        vision_latex=vision_latex,
-        raw=raw,
-        region_kind=region_kind,
-    )
+    if transcription is None:
+        transcription = _select_transcription(
+            parsed_latex=parsed_math.latex or "",
+            geometry_latex=geometry_latex,
+            vision_latex=vision_latex,
+            raw=raw,
+            region_kind=region_kind,
+            structured_latex=structured_latex,
+        )
+        final_warnings = list(transcription.warnings)
+        if transcription.source == "vision_math_agent":
+            final_warnings.extend(vision_issues)
+            if vision_confidence is not None and vision_confidence < 0.6:
+                transcription = TranscriptionSelection(
+                    latex=transcription.latex,
+                    source=transcription.source,
+                    confidence=min(transcription.confidence, 0.49),
+                    candidates=transcription.candidates,
+                    similarities=transcription.similarities,
+                    warnings=[
+                        *final_warnings,
+                        "The crop transcription model reported low confidence in the visible notation.",
+                    ],
+                )
+            elif final_warnings != transcription.warnings:
+                transcription = TranscriptionSelection(
+                    latex=transcription.latex,
+                    source=transcription.source,
+                    confidence=transcription.confidence,
+                    candidates=transcription.candidates,
+                    similarities=transcription.similarities,
+                    warnings=list(dict.fromkeys(final_warnings)),
+                )
+        cache_status = (
+            "verified"
+            if transcription.confidence >= 0.78 and not transcription.warnings
+            else "usable_unverified"
+            if transcription.confidence >= 0.6
+            else "review_required"
+        )
+        workspace.write_json(
+            transcription_cache_rel,
+            {
+                "version": 2,
+                "status": cache_status,
+                "selection": _selection_payload(transcription),
+                "vision_attempted": vision_attempted,
+                "vision_routed_reason": vision_routed_reason,
+                "vision": {
+                    "latex": vision_latex,
+                    "confidence": vision_confidence,
+                    "legibility_issues": vision_issues,
+                },
+                "layout_evidence": {
+                    key: layout_evidence[key]
+                    for key in ("crop_provenance", "vision_transcription")
+                    if key in layout_evidence
+                },
+            },
+        )
     seed_latex = transcription.latex
+    if transcription.confidence < 0.6:
+        safe_context = supplied_context or _page_context(parsed, page, raw)
+        unresolved_symbols = [
+            {
+                "symbol": symbol,
+                "meaning": "Meaning withheld until the equation transcription is verified.",
+                "source": "unresolved",
+                "evidence": "",
+                "page": page,
+            }
+            for symbol in parsed_math.free_symbols[:16]
+        ]
+        explanation = MathExplanation(
+            equation_id=equation_id,
+            page=page,
+            raw_equation=raw,
+            region_kind=region_kind,
+            paper_context=safe_context,
+            structured_sources=structured_sources,
+            layout_evidence=layout_evidence,
+            display_latex=transcription.latex,
+            latex_source=transcription.source,
+            parse=asdict(parsed_math),
+            role="transcription review required",
+            plain_english=(
+                "The source notation could not be reconstructed with enough confidence to explain safely. "
+                "Compare the original PDF crop with the candidate transcriptions below."
+            ),
+            steps=[],
+            symbols=unresolved_symbols,
+            intuition="Withheld because the equation transcription is uncertain.",
+            dimensional_analysis="Withheld because tensor and scalar structure may have been misread.",
+            implementation_view="Withheld until the notation is verified.",
+            paper_evidence=[],
+            context_fit="Withheld until the notation is verified.",
+            assumptions_or_missing_details=[
+                "No paper-specific mathematical interpretation was generated.",
+                *transcription.warnings,
+            ],
+            model="transcription-gate",
+            evaluation={},
+            loop={
+                "version": 3,
+                "attemptBudget": 0,
+                "attemptsUsed": 0,
+                "acceptedRepairs": 0,
+                "initialScore": 0.0,
+                "finalScore": 0.0,
+                "stopReason": "transcription_uncertain",
+                "feedbackApplied": [],
+                "iterations": [],
+            },
+            status="transcription_review_required",
+            transcription_confidence=transcription.confidence,
+            transcription_candidates=transcription.candidates,
+            transcription_similarities=transcription.similarities,
+            transcription_warnings=transcription.warnings,
+            explanation_confidence="low",
+            vision_attempted=vision_attempted,
+            vision_routed_reason=vision_routed_reason,
+            transcription_cache_hit=transcription_cache_hit,
+        )
+        checks = deterministic_math_checks(asdict(explanation))
+        explanation.evaluation = {
+            "verdict": "fail",
+            "overall_score": 0.0,
+            "dimensions": {},
+            "summary": "Explanation was intentionally withheld because transcription is uncertain.",
+            "issues": [
+                "Verify the equation against the bounded PDF crop before requesting an explanation."
+            ],
+            "deterministic_checks": checks,
+            "judge_model": "not_run_fail_closed",
+            "evaluated_at": "",
+        }
+        workspace.write_json(
+            cache_rel.replace("math/explanations/", "math/evaluations/"),
+            explanation.evaluation,
+        )
+        workspace.write_json(
+            cache_rel.replace("math/explanations/", "math/loops/"), explanation.loop
+        )
+        workspace.write_json(cache_rel, asdict(explanation))
+        from paper_agent.evidence_index import document_id
+
+        workspace.write_json(
+            f"math/artifacts/{equation_id}.json",
+            {"document_id": document_id(parsed), **asdict(explanation)},
+        )
+        return explanation
     with observed_stage(
         "ground-symbols",
         input_data={"page": page, "equation": seed_latex or raw},
@@ -1194,9 +1587,12 @@ def _explain_equation_impl(
             "symbol": item.symbol,
             "meaning": item.meaning,
             "source": item.source,
+            "evidence": item.evidence,
+            "page": item.page,
         }
         for item in grounding.symbols
     ]
+    tutor = tutor_context(parsed, workspace, page, raw, seed_latex)
     model_names = [primary_model]
     if chat_model is None and provider == "ollama":
         model_names.extend(
@@ -1270,6 +1666,7 @@ def _explain_equation_impl(
                 f"Vision transcription: {vision_latex or 'unavailable'}\n"
                 f"SymPy analysis: {json.dumps(asdict(parsed_math), ensure_ascii=False)}\n\n"
                 f"Grounded symbol table: {json.dumps(grounded_symbols, ensure_ascii=False)}\n\n"
+                f"Equation context and nearby equations (proximity does not establish dependency): {json.dumps(tutor, ensure_ascii=False)}\n\n"
                 f"Nearby paper explanation:\n{context}"
             )
             response_schema = (
@@ -1474,6 +1871,10 @@ def _explain_equation_impl(
         transcription_candidates=transcription_candidates,
         transcription_similarities=transcription.similarities,
         transcription_warnings=transcription_warnings,
+        vision_attempted=vision_attempted,
+        vision_routed_reason=vision_routed_reason,
+        transcription_cache_hit=transcription_cache_hit,
+        tutor=tutor,
     )
     if progress:
         progress("math_judge", "Running deterministic checks and the independent LLM judge.")
@@ -1829,6 +2230,12 @@ def _explain_equation_impl(
     )
     workspace.write_json(cache_rel.replace("math/explanations/", "math/loops/"), explanation.loop)
     workspace.write_json(cache_rel, asdict(explanation))
+    from paper_agent.evidence_index import document_id
+
+    workspace.write_json(
+        f"math/artifacts/{equation_id}.json",
+        {"document_id": document_id(parsed), **asdict(explanation)},
+    )
     return explanation
 
 

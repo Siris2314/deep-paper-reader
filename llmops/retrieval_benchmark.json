@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "description": "Paper-local questions with independently specified source pages; includes paraphrases, follow-ups, exact artifact references and unanswerable controls.",
+  "cases": [
+    {"id":"dpo-partition", "paper_id":"arXiv:2305.18290", "question":"Why does the partition function disappear from the preference objective?", "expected_pages":[4]},
+    {"id":"dpo-reference", "paper_id":"arXiv:2305.18290", "question":"What is the role of the reference policy and beta?", "expected_pages":[3,4]},
+    {"id":"dpo-gradient", "paper_id":"arXiv:2305.18290", "question":"How does optimization change the probability of rejected responses?", "expected_pages":[5]},
+    {"id":"dpo-followup", "paper_id":"arXiv:2305.18290", "question":"Why does that cancel?", "history":[{"role":"user","content":"Explain the partition function in DPO's reward reparameterization."}], "expected_pages":[4]},
+    {"id":"dpo-equation", "paper_id":"arXiv:2305.18290", "question":"Explain Equation 7", "expected_pages":[4]},
+    {"id":"dpo-equivalence", "paper_id":"arXiv:2305.18290", "question":"When are two reward functions equivalent?", "expected_pages":[5,6]},
+    {"id":"dpo-negative", "paper_id":"arXiv:2305.18290", "question":"Which quantum annealing processor was used for the molecular dynamics simulation?", "unanswerable":true},
+    {"id":"lsa-weights", "paper_id":"arXiv:2606.09079v2", "question":"How are routing head weights computed?", "expected_pages":[3,4]},
+    {"id":"lsa-frozen", "paper_id":"arXiv:2606.09079v2", "question":"Which representations stay fixed while the retrieval model is trained?", "expected_pages":[5,6]},
+    {"id":"lsa-golden", "paper_id":"arXiv:2606.09079v2", "question":"How are noisy positive targets filtered using layer consensus?", "expected_pages":[4,5]},
+    {"id":"lsa-equation", "paper_id":"arXiv:2606.09079v2", "question":"Explain Equation 11", "expected_pages":[5]},
+    {"id":"lsa-focal", "paper_id":"arXiv:2606.09079v2", "question":"Why use a focusing term to reduce the influence of easy negatives?", "expected_pages":[7]},
+    {"id":"lsa-ablation", "paper_id":"arXiv:2606.09079v2", "question":"Which hyperparameters were not systematically ablated?", "expected_pages":[7]},
+    {"id":"lsa-followup", "paper_id":"arXiv:2606.09079v2", "question":"Which layers are those?", "history":[{"role":"user","content":"Explain the three-layer OR-mode routing configuration."}], "expected_pages":[6]},
+    {"id":"lsa-negative", "paper_id":"arXiv:2606.09079v2", "question":"What dosage of the monoclonal antibody was administered to the randomized patients?", "unanswerable":true}
+  ]
+}

@@ -20,7 +20,9 @@ class ClaimCheck(BaseModel):
 
 
 def normalized(text: str) -> str:
-    return " ".join(text.lower().split()).strip(" .\"'*")
+    # Case can change scientific meaning (W versus w); exact-quote shortcuts must
+    # preserve it even when capitalization-only paraphrases need model verification.
+    return " ".join(text.split()).strip(" .\"'*")
 
 
 def check_claims(
@@ -84,12 +86,8 @@ def check_claims(
             if status in {"supported", "contradicted"} and not actual_quote:
                 result.reason = "The verifier did not return a matching source quotation."
             if result.status == "supported":
-                numbers = set(re.findall(r"(?<!\w)\d+(?:\.\d+)?", result.claim))
-                source_numbers = set(
-                    re.findall(
-                        r"(?<!\w)\d+(?:\.\d+)?", " ".join(requests[index]["evidence"].values())
-                    )
-                )
+                numbers = set(re.findall(r"(?<!\w)[+\-−]?\d+(?:\.\d+)?", result.claim))
+                source_numbers = set(re.findall(r"(?<!\w)[+\-−]?\d+(?:\.\d+)?", result.quote))
                 if numbers - source_numbers:
                     result.status = "unresolved"
                     result.reason = "A numerical value in the claim is absent from its cited passages; derived values need separate validation."

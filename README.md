@@ -1,8 +1,8 @@
 # Deep Paper Reader
 
 Deep Paper Reader is a local-first workspace for reading machine-learning papers. It keeps the
-original PDF intact, adds clickable annotations over the page, and brings in an agent only when a
-concept, equation, or question needs more work.
+original PDF intact and adds clickable annotations over the page. A local model reads paper
+structure during upload; deeper research runs when a concept, equation, or question needs it.
 
 The paper stays in view. Explanations open around it instead of replacing it with another generated
 summary.
@@ -44,9 +44,15 @@ flowchart LR
     Judge --> Answer
 ```
 
-The parser and coordinate overlays are deterministic. Model calls are reserved for synthesis,
-explanation, and evaluation. Paper evidence, web context, and model inference remain separately
-labeled throughout the application.
+PDF text extraction and coordinate overlays remain deterministic. A bounded local model pass
+identifies the title, sections, equations, figures, and tables from numbered source lines; every
+returned line reference is checked against the uploaded paper before an artifact is saved. Paper
+evidence, web context, and model inference remain separately labeled throughout the application.
+
+The structure pass runs for digital and scanned PDFs. It uses `PAPER_STRUCTURE_MODEL`, or the
+configured reader model when unset. Set `PAPER_STRUCTURE_ENABLED=false` to keep raw PDF reading
+without model-derived structure. If Ollama is unavailable, the reader keeps the original pages and
+extracted text and marks the structure as incomplete instead of guessing headings from patterns.
 
 ## Quick start
 

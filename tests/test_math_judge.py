@@ -22,8 +22,20 @@ def explanation_payload():
         "plain_english": "The hidden state is projected into a compressed query.",
         "steps": ["Read the hidden state.", "Apply the projection matrix."],
         "symbols": [
-            {"symbol": "h_t", "meaning": "current hidden state", "source": "paper"},
-            {"symbol": "W_DQ", "meaning": "down-projection matrix", "source": "paper"},
+            {
+                "symbol": "h_t",
+                "meaning": "current hidden state",
+                "source": "paper",
+                "evidence": "The paper defines h_t as the current hidden state.",
+                "page": 3,
+            },
+            {
+                "symbol": "W_DQ",
+                "meaning": "down-projection matrix",
+                "source": "paper",
+                "evidence": "W_DQ is the down-projection matrix.",
+                "page": 3,
+            },
         ],
         "intuition": "The projection compresses the query before per-head expansion.",
         "dimensional_analysis": "The hidden-state width must match the first dimension of W_DQ.",
@@ -127,6 +139,16 @@ def test_uncertain_transcription_is_a_deterministic_failure(tmp_path):
     assert result.verdict == "fail"
     assert result.deterministic_checks["transcription_confident"] is False
     assert any("transcription" in issue.lower() for issue in result.issues)
+
+
+def test_paper_symbol_requires_supporting_excerpt(tmp_path):
+    payload = explanation_payload()
+    payload["symbols"][0].pop("evidence")
+
+    checks = deterministic_math_checks(payload)
+
+    assert checks["paper_symbol_evidence_complete"] is False
+    assert checks["paper_symbols_without_evidence"] == ["h_t"]
 
 
 def test_vision_transcription_requires_bounded_crop_provenance(tmp_path):

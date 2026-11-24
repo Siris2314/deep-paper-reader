@@ -10,6 +10,7 @@ from paper_agent.math_agent import (
     _specific_role,
     analyze_expression,
     explain_equation,
+    transcription_needs_vision,
 )
 from paper_agent.math_judge import MathJudgeResult
 from paper_agent.parser import ParsedPaper
@@ -108,6 +109,64 @@ def test_display_transcription_prefers_validated_vision_over_unverified_sympy():
     assert selection.source == "vision_math_agent"
     assert selection.warnings
     assert selection.confidence < 0.6
+
+
+def test_vision_is_skipped_when_independent_candidates_agree():
+    selection = _select_transcription(
+        parsed_latex=r"s = x^{2} + y",
+        geometry_latex=r"s = x^{2} + y",
+        vision_latex="",
+        raw="s = x² + y",
+        region_kind="display",
+    )
+
+    needed, reason = transcription_needs_vision(selection, region_kind="display")
+
+    assert needed is False
+    assert reason == "independent_candidates_agree"
+
+
+def test_vision_is_routed_for_single_unverified_candidate():
+    selection = _select_transcription(
+        parsed_latex=r"s = x^{2} + y",
+        geometry_latex="",
+        vision_latex="",
+        raw="s = x² + y",
+        region_kind="display",
+    )
+
+    needed, reason = transcription_needs_vision(selection, region_kind="display")
+
+    assert needed is True
+    assert reason == "candidate_confidence_below_threshold"
+
+
+def test_uncertain_transcription_fails_closed_before_explanation(tmp_path, monkeypatch):
+    monkeypatch.setenv("PAPER_READER_MATH_VISION_ENABLED", "false")
+
+    result = explain_equation(
+        parsed_math_paper(),
+        Workspace(tmp_path / "workspace"),
+        1,
+        "math-uncertain",
+        "s = x^2 + y",
+        layout_evidence={"geometry_latex": r"z = \frac{x}{y}"},
+        chat_model=object(),
+        agent_factory=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("the explanation model must not run")
+        ),
+        judge_fn=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("the LLM judge must not run")
+        ),
+    )
+
+    assert result.status == "transcription_review_required"
+    assert result.model == "transcription-gate"
+    assert result.loop["stopReason"] == "transcription_uncertain"
+    assert result.evaluation["judge_model"] == "not_run_fail_closed"
+    assert result.steps == []
+    transcription_files = list((tmp_path / "workspace" / "math" / "transcriptions").glob("*.json"))
+    assert len(transcription_files) == 1
 
 
 def test_compact_repair_payload_omits_large_layout_and_duplicate_context():
@@ -263,9 +322,53 @@ def test_math_agent_explanation_is_cached(tmp_path):
     assert first.display_latex
     assert first.evaluation["verdict"] == "pass"
     assert first.loop["stopReason"] == "passed_initial"
-    assert first.symbols[0]["meaning"] == "input"
+    assert "input" in str(first.symbols[0]["meaning"])
+    assert all(item.get("evidence") for item in first.symbols if item["source"] == "paper")
     assert first.steps == ["Square x.", "Add y."]
     assert second.plain_english == first.plain_english
+
+
+def test_transcription_cache_is_reused_independently_of_explanation_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("PAPER_READER_MATH_VISION_ENABLED", "false")
+
+    class FakeAgent:
+        def invoke(self, payload):
+            return {"messages": [SimpleNamespace(content=json.dumps(math_payload("Grounded.")))]}
+
+    parsed_expression = analyze_expression("s = x^2 + y")
+    workspace = Workspace(tmp_path / "workspace")
+
+    def judge(*args, **kwargs):
+        return judge_result("pass", 4.5)
+
+    first = explain_equation(
+        parsed_math_paper(),
+        workspace,
+        1,
+        "math-cache-split",
+        "s = x^2 + y",
+        layout_evidence={"geometry_latex": parsed_expression.latex},
+        chat_model=object(),
+        agent_factory=lambda **kwargs: FakeAgent(),
+        judge_fn=judge,
+    )
+    for cached_explanation in (tmp_path / "workspace" / "math" / "explanations").glob("*.json"):
+        cached_explanation.unlink()
+    second = explain_equation(
+        parsed_math_paper(),
+        workspace,
+        1,
+        "math-cache-split",
+        "s = x^2 + y",
+        layout_evidence={"geometry_latex": parsed_expression.latex},
+        chat_model=object(),
+        agent_factory=lambda **kwargs: FakeAgent(),
+        judge_fn=judge,
+    )
+
+    assert first.transcription_cache_hit is False
+    assert second.transcription_cache_hit is True
+    assert second.display_latex == first.display_latex
 
 
 def test_math_agent_failure_returns_grounded_focal_loss_fallback(tmp_path):

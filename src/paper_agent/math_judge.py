@@ -226,6 +226,13 @@ def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
         if isinstance(item, dict)
         and str(item.get("source") or "") not in {"paper", "inference", "unresolved"}
     ]
+    paper_symbols_without_evidence = [
+        str(item.get("symbol") or "")
+        for item in symbols
+        if isinstance(item, dict)
+        and str(item.get("source") or "") == "paper"
+        and not str(item.get("evidence") or "").strip()
+    ]
     dangerous_latex = bool(
         re.search(r"\\(?:href|url|includegraphics|input|write18)\b", latex, re.I)
     )
@@ -273,6 +280,8 @@ def deterministic_math_checks(explanation: dict[str, Any]) -> dict[str, object]:
             for item in symbols
         ),
         "unsupported_symbol_sources": unsupported_sources,
+        "paper_symbol_evidence_complete": not paper_symbols_without_evidence,
+        "paper_symbols_without_evidence": paper_symbols_without_evidence,
         "inline_math_valid": not inline_math_issues,
         "inline_math_issues": inline_math_issues,
     }
@@ -596,6 +605,7 @@ def evaluate_math_explanation(
         or not checks["inline_math_valid"]
         or not checks["transcription_confident"]
         or not checks["vision_crop_grounded"]
+        or not checks["paper_symbol_evidence_complete"]
         or min(scores) < 2
     )
     verdict = (
@@ -619,6 +629,11 @@ def evaluate_math_explanation(
     if not checks["vision_crop_grounded"]:
         issues.append(
             "Vision LaTeX was not linked to a verifiable bounded crop from the source PDF."
+        )
+    if not checks["paper_symbol_evidence_complete"]:
+        issues.append(
+            "Symbols labeled as paper-defined are missing a supporting paper excerpt: "
+            + ", ".join(str(item) for item in checks["paper_symbols_without_evidence"])
         )
     issues.extend(str(item) for item in checks["inline_math_issues"])
     issues = list(dict.fromkeys(issues))
